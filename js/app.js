@@ -15,8 +15,9 @@ const store = {
   if (p) { store.set('api', p); history.replaceState(null, '', location.pathname); }
 })();
 
-const API = store.get('api', '') || window.CONFIG.API_URL ||
-  (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? '/api' : '');
+// Локально (node dev/server.js) — всегда тестовый сервер, чтобы не трогать настоящую таблицу.
+const API = store.get('api', '') ||
+  (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? '/api' : window.CONFIG.API_URL);
 const POLL_MS = window.CONFIG.POLL_MS || 2000;
 
 const SCREEN_TITLES = {
@@ -427,19 +428,32 @@ function iqKey() { return 'iq_' + (myTeam() || ''); }
 function iqLocal() { return myTeam() ? store.get(iqKey(), null) : null; }
 function iqSave(v) { store.set(iqKey(), v); renderView(true); }
 
+// Тест проходит вся группа вместе на своём планшете: одна попытка на группу.
 function viewIq() {
   const team = myTeam();
   const iq = app.data.iq;
-  if (!team) return `<section class="hero"><div class="hero-kicker">Идёт</div><h1 class="hero-title">IQ-тест 🧠</h1><p class="muted">Команды проходят тест на своих планшетах</p></section>`;
-  const loc = iqLocal() || { phase: 'pick', names: [] };
-  if (loc.phase === 'pick') {
+  if (!team) return `<section class="hero"><div class="hero-kicker">Идёт</div><h1 class="hero-title">IQ-тест 🧠</h1><p class="muted">Группы проходят тест на своих планшетах</p></section>`;
+  const done = (app.data.iqDone || {})[team];
+  let loc = iqLocal();
+  // Пульт сбросил попытку группы — начинаем с чистого листа.
+  if (loc && loc.phase === 'done' && !done && app.data.dataV >= (loc.dataV || 0)) { store.del(iqKey()); loc = null; }
+  if (done && (!loc || loc.phase !== 'test')) {
+    return `<section class="card narrow center">
+      <div class="big-emoji">🧠</div>
+      <div class="muted">${esc(team)} прошла тест</div>
+      <div class="score-big">${done.score} <span>из ${done.max}</span></div>
+      <div class="iq-num">IQ группы ≈ ${iqNumber(done.score, done.max)}</div>
+      <p class="muted small">Рейтинг групп покажут именинники</p>
+    </section>`;
+  }
+  if (!loc || loc.phase === 'pick') {
     if (!app.state.iq.open) return `<section class="hero"><h1 class="hero-title">IQ-тест скоро начнётся</h1><p class="muted">Ждём команду от именинников</p></section>`;
-    const members = app.data.teams.find(t => t.name === team)?.members || [];
-    return `<section class="card narrow">
-      <h1>🧠 IQ-тест</h1>
-      <p class="muted">${iq.questions.length} вопросов${iq.minutes ? `, ${iq.minutes} мин` : ''}. Кто проходит тест?</p>
-      <div class="chips">${members.map(m => `<button class="chip ${loc.names.includes(m.name) ? 'on' : ''}" data-act="iqPick" data-name="${esc(m.name)}">${esc(m.name)}</button>`).join('')}</div>
-      <button class="btn big" data-act="iqStart" ${loc.names.length ? '' : 'disabled'}>Начать тест</button>
+    return `<section class="card narrow center">
+      <div class="big-emoji">🧠</div>
+      <h1>IQ-тест</h1>
+      <p>${iq.questions.length} вопросов${iq.minutes ? `, ${iq.minutes} мин` : ''}.</p>
+      <p class="muted">Решайте всей группой вместе — у группы одна попытка. Соберитесь у планшета и нажмите «Начать».</p>
+      <button class="btn big" data-act="iqStart">Начать тест</button>
     </section>`;
   }
   if (loc.phase === 'test') {
@@ -463,13 +477,7 @@ function viewIq() {
   }
   if (loc.phase === 'sending') return `<section class="card narrow center"><h2>Отправляем ответы…</h2>
     ${loc.error ? `<p class="bad">${esc(loc.error)}</p><button class="btn" data-act="iqFinish" data-force="1">Повторить</button>` : ''}</section>`;
-  return `<section class="card narrow center">
-    <div class="big-emoji">🧠</div>
-    <div class="muted">${esc(loc.names.join(', '))}</div>
-    <div class="score-big">${loc.score} <span>из ${loc.max}</span></div>
-    <div class="iq-num">IQ ≈ ${iqNumber(loc.score, loc.max)}</div>
-    <button class="btn" data-act="iqNext">Следующий участник</button>
-  </section>`;
+  return `<div class="loading">Сохраняем результат…</div>`;
 }
 
 function iqNumber(score, max) { return max ? Math.round(80 + 70 * score / max) : 0; }
@@ -497,10 +505,11 @@ async function iqSubmit() {
   loc.error = '';
   iqSave(loc);
   try {
-    const j = await apiPost({ a: 'iqSubmit', team: myTeam(), names: loc.names, answers: loc.answers, attemptId: loc.attemptId });
-    iqSave(Object.assign(loc, { phase: 'done', score: j.score, max: j.max }));
+    const j = await apiPost({ a: 'iqSubmit', team: myTeam(), answers: loc.answers, attemptId: loc.attemptId });
+    iqSave(Object.assign(loc, { phase: 'done', score: j.score, max: j.max, dataV: j.state ? j.state.dataV : 0 }));
     if (j.state) onState(j.state);
   } catch (e) {
+    if (/уже прошла/.test(e.message)) { store.del(iqKey()); loadData(); renderView(true); return; }
     iqSave(Object.assign(loc, { error: 'Не получилось отправить: ' + e.message }));
   }
 }
@@ -549,10 +558,10 @@ const MEDALS = ['🥇', '🥈', '🥉'];
 
 function viewIqRating(list, compact) {
   return `<section class="card ${compact ? '' : 'narrow'}">
-    ${compact ? '' : '<h1>🧠 Рейтинг IQ-теста</h1>'}
+    ${compact ? '' : '<h1>🧠 Рейтинг IQ-теста по группам</h1>'}
     ${list.length ? `<ol class="rating">${list.map((x, i) => `<li>
       <span class="place">${MEDALS[i] || i + 1}</span>
-      <span class="who"><b>${esc(x.people || x.team)}</b><span class="muted small">${esc(x.team)}</span></span>
+      <span class="who"><b>${esc(x.team)}</b><span class="muted small">${esc(x.people)}</span></span>
       <span class="pts">${x.score}<span class="muted">/${x.max}</span></span>
       <span class="iqv muted small">IQ ${iqNumber(x.score, x.max)}</span></li>`).join('')}</ol>` : '<p class="muted">Пока никто не прошёл тест</p>'}
   </section>`;
@@ -773,9 +782,17 @@ function adminIq() {
         <button class="btn ${st.iq.open ? 'red' : 'green'}" data-act="setOpen" data-game="iq" data-open="${st.iq.open ? 0 : 1}">${st.iq.open ? 'Закрыть новые попытки' : 'Открыть тест'}</button>
       </div>
       ${screenBtn('results', '🏆 Показать рейтинг на планшетах', 'data-results="iq"')}
+      <h3>Группы</h3>
+      <p class="muted small">Тест проходит вся группа вместе, одна попытка. «Заново» удаляет результат группы.</p>
+      <ul class="devices">${app.admin.teams.filter(t => !t.birthday).map(t => {
+        const r = app.admin.iq.find(x => x.team === t.name);
+        return `<li class="${r ? 'on' : 'off'}"><span class="dot-s"></span>${esc(t.name)}
+          <span class="muted">${r ? `${r.score}/${r.max} · ${esc(r.time)}` : 'ещё не прошла'}</span>
+          ${r ? `<button class="icon-btn" data-act="iqReset" data-team="${esc(t.name)}" title="Дать пройти заново">↺ заново</button>` : ''}</li>`;
+      }).join('')}</ul>
     </section>
     <section class="card span2">
-      <h2>Рейтинг</h2>
+      <h2>Рейтинг групп</h2>
       ${viewIqRating(app.admin.iq, true)}
     </section>
   </div>`;
@@ -876,15 +893,8 @@ const ACTIONS = {
     catch (e) { toast(e.message, 'err'); }
     finally { app.busy.fact = false; renderView(true); }
   },
-  iqPick(el) {
-    const loc = iqLocal() || { phase: 'pick', names: [] };
-    const n = el.dataset.name;
-    loc.names = loc.names.includes(n) ? loc.names.filter(x => x !== n) : loc.names.concat(n);
-    iqSave(loc);
-  },
   iqStart() {
-    const loc = iqLocal();
-    iqSave({ phase: 'test', names: loc.names, answers: {}, idx: 0, startedAt: Date.now(), attemptId: Date.now() + '-' + Math.random().toString(36).slice(2, 8) });
+    iqSave({ phase: 'test', answers: {}, idx: 0, startedAt: Date.now(), attemptId: Date.now() + '-' + Math.random().toString(36).slice(2, 8) });
   },
   iqAnswer(el) {
     const loc = iqLocal();
@@ -901,7 +911,6 @@ const ACTIONS = {
     if (!el.dataset.force && left && !confirm(`Без ответа ${left} вопр. Завершить тест?`)) return;
     iqSubmit();
   },
-  iqNext() { store.del(iqKey()); renderView(true); },
   async roomSubmit(el) {
     const game = el.dataset.game;
     const team = myTeam();
@@ -927,6 +936,7 @@ const ACTIONS = {
   setScreen(el) { act('setScreen', { screen: el.dataset.screen, results: el.dataset.results }); },
   planCurrent(el) { act('planCurrent', { i: Number(el.dataset.i) }); },
   refresh() { act('refresh').then(() => toast('Данные перечитаны', 'ok')); },
+  iqReset(el) { if (confirm(`Удалить результат «${el.dataset.team}» и дать группе пройти тест заново?`)) act('iqReset', { team: el.dataset.team }); },
   setOpen(el) { act('setOpen', { game: el.dataset.game, open: el.dataset.open === '1' }); },
   showAnswers(el) { act('showAnswers', { on: el.checked }); },
   factsTurn() {

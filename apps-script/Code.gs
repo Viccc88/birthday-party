@@ -311,10 +311,10 @@ function readIqQuestions_() {
 }
 
 function readIqResults_() {
-  return rows_(SH.iqR).slice(1).filter(r => str_(r[1])).map(r => ({
-    time: str_(r[0]), team: str_(r[1]), people: str_(r[2]),
+  return rows_(SH.iqR).slice(1).map((r, i) => ({
+    row: i + 2, time: str_(r[0]), team: str_(r[1]), people: str_(r[2]),
     score: Number(r[3]) || 0, max: Number(r[4]) || 0, id: str_(r[6]),
-  }));
+  })).filter(x => x.team);
 }
 
 function readAnswers_() {
@@ -382,6 +382,13 @@ function computeGame_(game, teams, settings, answers, correct, withCorrect) {
   return out;
 }
 
+// Результат IQ-теста каждой группы (одна попытка на группу).
+function iqDone_() {
+  const out = {};
+  readIqResults_().forEach(r => { out[r.team] = { score: r.score, max: r.max }; });
+  return out;
+}
+
 function iqRating_() {
   return readIqResults_().sort((x, y) => (y.score - x.score) || (x.time < y.time ? -1 : 1));
 }
@@ -415,6 +422,7 @@ function getPublicData_() {
     },
     rooms: { items: settings.itemsRooms, words: settings.wordsRooms },
     submitted: submitted,
+    iqDone: iqDone_(),
   };
   if (showResults) {
     const correct = readCorrect_();
@@ -475,12 +483,14 @@ const TEAM_ACTIONS = {
     return res;
   },
 
+  // Тест проходит вся группа вместе: одна попытка на группу.
   iqSubmit(b) {
     if (!b.team) throw new Error('Не указана команда');
     return withLock_(() => {
       const results = readIqResults_();
       const dup = results.filter(r => r.id && r.id === b.attemptId)[0];
       if (dup) return { ok: true, score: dup.score, max: dup.max, state: getState_() };
+      if (results.some(r => r.team === b.team)) throw new Error('Группа уже прошла тест');
 
       const qs = readIqQuestions_();
       const answers = b.answers || {};
@@ -490,11 +500,12 @@ const TEAM_ACTIONS = {
         max += q.pts;
         if (q.ans && String(answers[q.id] || '').toUpperCase() === q.ans) score += q.pts;
       });
-      const names = (b.names || []).map(str_).filter(Boolean);
+      const team = readTeams_(readSettings_()).filter(t => t.name === b.team)[0];
+      const names = team ? team.members.map(m => m.name) : [];
       ss_().getSheetByName(SH.iqR).appendRow([
         now_(), b.team, names.join(', '), score, max, JSON.stringify(answers), b.attemptId || '',
       ]);
-      writePersonScores_(b.team, names, score);
+      writeTeamScore_(b.team, score);
       const st = getState_();
       st.dataV++;
       saveState_(st);
@@ -532,15 +543,15 @@ const TEAM_ACTIONS = {
   },
 };
 
-// Баллы IQ каждому участнику в лист «4 комнаты», колонка «Айкью тест».
-function writePersonScores_(team, names, score) {
+// Баллы IQ группы каждому её участнику в лист «4 комнаты», колонка «Айкью тест».
+function writeTeamScore_(team, score) {
   const sh = ss_().getSheetByName(SH.rooms);
-  if (!sh || !names.length) return;
+  if (!sh) return;
   const vals = sh.getDataRange().getDisplayValues();
   const col = vals[0].findIndex(h => norm_(h).indexOf('айкью') >= 0 || norm_(h).indexOf('iq') >= 0);
   if (col < 0) return;
   vals.forEach((r, i) => {
-    if (i > 0 && str_(r[0]) === team && names.indexOf(str_(r[2])) >= 0) sh.getRange(i + 1, col + 1).setValue(score);
+    if (i > 0 && str_(r[0]) === team) sh.getRange(i + 1, col + 1).setValue(score);
   });
 }
 
@@ -568,6 +579,16 @@ const ADMIN_ACTIONS = {
   setOpen(b) {
     if (['iq', 'items', 'words'].indexOf(b.game) < 0) throw new Error('Неизвестная игра');
     return mutate_(st => { st[b.game].open = !!b.open; });
+  },
+
+  // Дать группе пройти тест заново: удалить её результат.
+  iqReset(b) {
+    return mutate_(st => {
+      const sh = ss_().getSheetByName(SH.iqR);
+      readIqResults_().filter(r => r.team === b.team).reverse().forEach(r => sh.deleteRow(r.row));
+      writeTeamScore_(b.team, '');
+      st.dataV++;
+    });
   },
 
   showAnswers(b) { return mutate_(st => { st.showAnswers = !!b.on; }); },
