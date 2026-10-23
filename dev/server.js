@@ -34,6 +34,7 @@ class Range {
     return this;
   }
   setFontWeight() { return this; }
+  clearContent() { return this.setValues(this.getValues().map(r => r.map(() => ''))); }
   getSheet() { return this.sheet; }
 }
 
@@ -150,3 +151,5 @@ http.createServer((req, res) => {
   res.writeHead(200, { 'Content-Type': (TYPES[path.extname(file)] || 'application/octet-stream') + '; charset=utf-8' });
   fs.createReadStream(file).pipe(res);
 }).listen(PORT, () => console.log(`Сайт: http://localhost:${PORT}  (PIN пульта: 0000)`));
+
+module.exports = { ctx, spreadsheet };
