@@ -92,7 +92,11 @@ function route_(p, b) {
   const a = b.a || p.a;
   if (a === 'state') {
     if (p.d) cache_().put('seen_' + p.d, String(Date.now()), 600);
-    return { ok: true, state: getState_(), now: Date.now() };
+    const st = getState_();
+    const out = { ok: true, state: st, now: Date.now() };
+    // Данные изменились с прошлого раза — отдаём их сразу, без второго запроса.
+    if (p.dk !== undefined && p.dk !== dataKey_(st)) out.data = getPublicData_();
+    return out;
   }
   if (a === 'data') return { ok: true, data: getPublicData_() };
   if (a === 'word') return { ok: true, word: myWord_(p.team) };
@@ -159,9 +163,20 @@ function str_(v) { return v === null || v === undefined ? '' : String(v).trim();
 function norm_(s) { return str_(s).toLowerCase().replace(/ё/g, 'е').replace(/[^a-zа-я0-9]+/g, ' ').trim(); }
 function now_() { return Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'HH:mm:ss'); }
 
+// Пока собираются данные для устройств, каждый лист читается один раз.
+let ROWS_MEMO = null;
+
 function rows_(name) {
+  if (ROWS_MEMO && ROWS_MEMO[name]) return ROWS_MEMO[name];
   const sh = ss_().getSheetByName(name);
-  return sh ? sh.getDataRange().getDisplayValues() : [];
+  const vals = sh ? sh.getDataRange().getDisplayValues() : [];
+  if (ROWS_MEMO) ROWS_MEMO[name] = vals;
+  return vals;
+}
+
+function withMemo_(fn) {
+  ROWS_MEMO = {};
+  try { return fn(); } finally { ROWS_MEMO = null; }
 }
 
 function shuffle_(arr) {
@@ -454,7 +469,7 @@ function publicChallenge_(st, teams) {
   const out = {
     id: ch.id, name: ch.name, type: ch.type, task: ch.task, pts: ch.pts,
     options: words ? [] : ch.type === 'spy' ? teams.filter(t => !t.birthday).map(t => t.name) : ch.options,
-    phase: cur.phase, endsAt: cur.endsAt, presenter: cur.presenter || null, answers: {},
+    phase: cur.phase, startedAt: cur.startedAt, endsAt: cur.endsAt, presenter: cur.presenter || null, answers: {},
   };
   answers.filter(a => a.id === ch.id).forEach(a => { out.answers[a.team] = a.answer; });
   if (cur.phase === 'reveal') {
@@ -485,18 +500,27 @@ function iqRating_() {
 
 // ===================== Данные для устройств =====================
 
+// Версия данных: меняется при любой правке и при показе результатов IQ.
+function dataKey_(st) { return st.dataV + (st.screen === 'results' ? '_r' : ''); }
+
 function getPublicData_() {
   ensureSheets_();
   const st = getState_();
-  const showResults = st.screen === 'results';
-  const key = 'data_' + st.dataV + (showResults ? '_r' : '');
+  const key = 'data_' + dataKey_(st);
   const hit = cache_().get(key);
   if (hit) return JSON.parse(hit);
+  const data = withMemo_(() => buildPublicData_(st));
+  try { cache_().put(key, JSON.stringify(data), 20); } catch (e) {}
+  return data;
+}
 
+function buildPublicData_(st) {
+  const showResults = st.screen === 'results';
   const settings = readSettings_();
   const teams = readTeams_(settings);
   const data = {
     dataV: st.dataV,
+    key: dataKey_(st),
     teams: teams,
     plan: readPlan_(),
     facts: readFacts_().map(f => ({ id: f.id, text: f.text })),
@@ -509,12 +533,15 @@ function getPublicData_() {
     scores: st.scoresHidden ? null : readScores_(),
   };
   if (showResults) data.results = { iq: iqRating_() };
-  try { cache_().put(key, JSON.stringify(data), 20); } catch (e) {}
   return data;
 }
 
 function getAdminData_() {
   ensureSheets_();
+  return withMemo_(buildAdminData_);
+}
+
+function buildAdminData_() {
   const settings = readSettings_();
   const teams = readTeams_(settings);
   const chAnswers = readChAnswers_();

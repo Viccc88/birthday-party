@@ -18,7 +18,7 @@ const store = {
 // Локально (node dev/server.js) — всегда тестовый сервер, чтобы не трогать настоящую таблицу.
 const API = store.get('api', '') ||
   (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) ? '/api' : window.CONFIG.API_URL);
-const POLL_MS = window.CONFIG.POLL_MS || 2000;
+const POLL_MS = window.CONFIG.POLL_MS || 1500;
 
 const SCREEN_TITLES = {
   plan: 'План / ожидание',
@@ -36,7 +36,6 @@ const app = {
   state: null,
   data: null,
   dataRaw: '',
-  dataKey: '',
   dataAt: 0,
   admin: null,
   adminRaw: '',
@@ -178,9 +177,10 @@ async function poll() {
   clearTimeout(pollTimer);
   try {
     const t0 = Date.now();
-    const j = await apiGet({ a: 'state', d: deviceName() });
+    const j = await apiGet({ a: 'state', d: deviceName(), dk: app.data ? app.data.key || '' : '' });
     syncClock(j.now, t0, Date.now());
     setOnline(true);
+    if (j.data) setData(j.data);
     onState(j.state);
   } catch (e) {
     setOnline(false);
@@ -209,8 +209,8 @@ function onState(st) {
   if (app.state && st.v < app.state.v) return;
   const prev = app.state;
   app.state = st;
-  const key = st.dataV + '|' + (st.screen === 'results' ? 'r' : '');
-  if (key !== app.dataKey || Date.now() - app.dataAt > 30000) loadData(key);
+  // Обычно данные уже пришли вместе с опросом; отдельный запрос — после своих действий и раз в 30 с.
+  if (!app.data || app.data.key !== dataKey(st) || Date.now() - app.dataAt > 30000) loadData();
   if (isAdmin() && (!prev || prev.dataV !== st.dataV || Date.now() - app.adminAt > 10000)) loadAdmin();
   if (prev && prev.screen !== st.screen && !isAdmin()) { sound.chime(); app.tab = 'now'; }
   else if (prev && !isAdmin() && st.screen === 'challenge' &&
@@ -219,16 +219,21 @@ function onState(st) {
   renderView();
 }
 
+function dataKey(st) { return st.dataV + (st.screen === 'results' ? '_r' : ''); }
+
+function setData(data) {
+  app.dataAt = Date.now();
+  const raw = JSON.stringify(data);
+  if (raw !== app.dataRaw) { app.dataRaw = raw; app.data = data; renderView(); }
+}
+
 let dataLoading = false;
-async function loadData(key) {
+async function loadData() {
   if (dataLoading) return;
   dataLoading = true;
   try {
     const j = await apiGet({ a: 'data' });
-    app.dataAt = Date.now();
-    app.dataKey = key || app.dataKey;
-    const raw = JSON.stringify(j.data);
-    if (raw !== app.dataRaw) { app.dataRaw = raw; app.data = j.data; renderView(); }
+    setData(j.data);
   } catch (e) {} finally { dataLoading = false; }
 }
 
@@ -280,7 +285,14 @@ function renderView(force) {
   const key = JSON.stringify([app.tab, app.adminTab, st, app.dataRaw, isAdmin() ? app.adminRaw : '', iqLocal()]);
   if (!force && key === app.viewKey) return;
   app.viewKey = key;
-  const html = isAdmin() ? viewAdmin() : viewGuest();
+  let html;
+  try {
+    html = isAdmin() ? viewAdmin() : viewGuest();
+  } catch (e) {
+    console.error(e);
+    html = `<section class="card narrow center"><div class="big-emoji">⚠️</div><h2>Не удалось показать этот экран</h2>
+      <p class="muted">${esc(e.message)}</p><button class="btn" onclick="location.reload()">Обновить страницу</button></section>`;
+  }
   paint($('#main'), html);
   const hdr = $('#hdr-now');
   if (hdr) hdr.innerHTML = headerNow();
@@ -464,10 +476,11 @@ function viewIq() {
   const team = myTeam();
   const iq = app.data.iq;
   if (!team) return `<section class="hero"><div class="hero-kicker">Идёт</div><h1 class="hero-title">IQ-тест 🧠</h1><p class="muted">Группы проходят тест на своих планшетах</p></section>`;
-  const done = (app.data.iqDone || {})[team];
+  let done = (app.data.iqDone || {})[team];
   let loc = iqLocal();
   // Пульт сбросил попытку группы — начинаем с чистого листа.
   if (loc && loc.phase === 'done' && !done && app.data.dataV >= (loc.dataV || 0)) { store.del(iqKey()); loc = null; }
+  if (loc && loc.phase === 'done' && !done) done = { score: loc.score, max: loc.max };
   if (done && (!loc || loc.phase !== 'test')) {
     return `<section class="card narrow center">
       <div class="big-emoji">🧠</div>
@@ -579,13 +592,14 @@ const CH_TURN = {
 };
 
 // Своё секретное слово в «4 словах» приходит отдельным запросом.
-let wordLoading = 0;
+let wordLoading = '';
 function loadMyWord(ch) {
   const team = myTeam();
-  if (!team || ch.type !== 'words' || (app.myWord && app.myWord.id === ch.id) || wordLoading === ch.id) return;
-  wordLoading = ch.id;
-  apiGet({ a: 'word', team }).then(j => { app.myWord = { id: ch.id, word: j.word }; renderView(true); })
-    .catch(() => {}).finally(() => { wordLoading = 0; });
+  const key = ch.id + ':' + ch.startedAt;
+  if (!team || ch.type !== 'words' || (app.myWord && app.myWord.key === key) || wordLoading === key) return;
+  wordLoading = key;
+  apiGet({ a: 'word', team }).then(j => { app.myWord = { key, word: j.word }; renderView(true); })
+    .catch(() => {}).finally(() => { wordLoading = ''; });
 }
 
 function chTimeLeft(ch) { return ch.endsAt ? Math.max(0, Math.round((ch.endsAt - 3000 - serverNow()) / 1000)) : null; }
@@ -598,7 +612,7 @@ function viewChallenge() {
   const spy = ch.type === 'spy';
   const turn = CH_TURN[ch.type];
   if (words) loadMyWord(ch);
-  const myWord = words && app.myWord && app.myWord.id === ch.id ? app.myWord.word : '';
+  const myWord = words && app.myWord && app.myWord.key === ch.id + ':' + ch.startedAt ? app.myWord.word : '';
   const mine = team ? ch.answers[team] : '';
   const left = chTimeLeft(ch);
   const open = ch.phase === 'answer' && left !== 0;
@@ -635,9 +649,9 @@ function viewChallenge() {
     const id = `ch-ans-${ch.id}`;
     const q = words ? 'Итоговое предложение из всех слов' : ch.type === 'case' ? 'Сколько вы взяли из кейса?' : 'Ваш ответ';
     if (spy) {
-      body = `<label>Кто шпионы?</label><div class="iq-opts">${ch.options.filter(o => o !== team).map(o => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}"><b>🕵️</b>${esc(o)}</button>`).join('')}</div>`;
+      body = `<label>Кто шпионы?</label><div class="iq-opts">${ch.options.filter(o => o !== team).map(o => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}" ${app.busy.ch ? 'disabled' : ''}><b>🕵️</b>${esc(o)}</button>`).join('')}</div>`;
     } else if (ch.type === 'choice') {
-      body = `<div class="iq-opts">${ch.options.map((o, i) => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}"><b>${'ABCDEFGH'[i] || i + 1}</b>${esc(o)}</button>`).join('')}</div>`;
+      body = `<div class="iq-opts">${ch.options.map((o, i) => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}" ${app.busy.ch ? 'disabled' : ''}><b>${'ABCDEFGH'[i] || i + 1}</b>${esc(o)}</button>`).join('')}</div>`;
     } else {
       const input = ch.type === 'number' || ch.type === 'case'
         ? `<input id="${id}" data-draft inputmode="decimal" value="${esc(mine)}" placeholder="${ch.type === 'case' ? 'сумма' : 'число'}" autocomplete="off">`
@@ -667,11 +681,16 @@ function chTick() {
   clearInterval(chInterval);
   const ch = app.data && app.state && app.state.screen === 'challenge' && app.data.challenge;
   if (!ch || ch.phase !== 'answer' || !ch.endsAt) return;
+  let wasOpen = chTimeLeft(ch) > 0;
   const upd = () => {
     const left = chTimeLeft(ch);
     const el = $('#ch-timer');
     if (el) { el.textContent = `⏱ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`; el.classList.toggle('low', left < 15); }
-    if (left === 0) { clearInterval(chInterval); renderView(true); }
+    if (left === 0) {
+      clearInterval(chInterval);
+      // Перерисовать только в момент, когда время вышло, иначе отрисовка запустит таймер снова.
+      if (wasOpen) { wasOpen = false; renderView(true); }
+    }
   };
   upd();
   chInterval = setInterval(upd, 1000);
@@ -761,6 +780,11 @@ function viewAdmin() {
   const st = app.state;
   const a = app.admin;
   if (!st || !a || !app.data) return `<div class="loading">Загрузка…</div>`;
+  if (!a.challenges || !a.scores) {
+    return `<section class="card narrow center"><div class="big-emoji">🔄</div><h2>Скрипт таблицы старой версии</h2>
+      <p class="muted">Вставьте новый Code.gs в Apps Script и выпустите новую версию развертывания, затем обновите страницу.</p>
+      <button class="btn" onclick="location.reload()">Обновить страницу</button></section>`;
+  }
   const nowBar = `<div class="now-bar">На планшетах: <b>${esc(SCREEN_TITLES[st.screen] || st.screen)}${st.screen === 'results' ? ' — ' + esc(GAME_TITLES[st.results]) : ''}</b></div>`;
   switch (app.adminTab) {
     case 'plan': return nowBar + adminPlan();
@@ -932,8 +956,6 @@ function adminIq() {
   </div>`;
 }
 
-function verdictIcon(ok) { return ok === true ? '<b class="ok">✓</b>' : ok === false ? '<b class="bad">✗</b>' : '<b class="muted">?</b>'; }
-
 const CH_PHASES = { answer: 'идёт приём ответов', closed: 'приём закрыт', reveal: 'ответ показан' };
 
 function adminChallenges() {
@@ -1059,10 +1081,17 @@ async function buzzPress(e) {
   const local = { id: bz.id, ms: Math.max(0, Math.round(serverNow() - bz.startAt)) };
   store.set('buzz', local);
   renderBuzzer();
-  try {
-    const j = await apiPost(Object.assign({ a: 'buzzerPress', team: myTeam() }, local));
-    onState(j.state);
-  } catch (err) { toast(err.message, 'err'); }
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const j = await apiPost(Object.assign({ a: 'buzzerPress', team: myTeam() }, local));
+      onState(j.state);
+      return;
+    } catch (err) {
+      // Ответ сервера с ошибкой (раунд закрыт) не повторяем; обрыв сети — повторяем.
+      if (!(err instanceof TypeError) || attempt === 4) { toast(err.message, 'err'); return; }
+      await new Promise(r => setTimeout(r, 700 * attempt));
+    }
+  }
 }
 
 let finalizing = 0;

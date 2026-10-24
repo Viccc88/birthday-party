@@ -124,7 +124,7 @@ vm.runInContext(fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8
 // ---------- HTTP ----------
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.mp3': 'audio/mpeg' };
 
-http.createServer((req, res) => {
+const server = http.createServer((req, res) => {
   const url = new URL(req.url, 'http://x');
   if (url.pathname === '/api') {
     let body = '';
@@ -150,6 +150,9 @@ http.createServer((req, res) => {
   }
   res.writeHead(200, { 'Content-Type': (TYPES[path.extname(file)] || 'application/octet-stream') + '; charset=utf-8' });
   fs.createReadStream(file).pipe(res);
-}).listen(PORT, () => console.log(`Сайт: http://localhost:${PORT}  (PIN пульта: 0000)`));
+});
+
+// При запуске напрямую — сервер; при require (dev/test.js) — только эмулятор таблицы.
+if (require.main === module) server.listen(PORT, () => console.log(`Сайт: http://localhost:${PORT}  (PIN пульта: 0000)`));
 
 module.exports = { ctx, spreadsheet };
