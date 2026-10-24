@@ -37,12 +37,14 @@ const DISCIPLINES_SEED = ['Знакомство по фактам', 'Мафия 
 // «шпион»: группы по одной заходят в комнату, у одной группы сценка отличается. Группы задают
 // вопросы и голосуют, кто шпионы. «Правильный ответ» — группа-шпионы. Угадавшим — «Баллы»,
 // шпионам — «Баллы», если их не вычислило большинство.
+// «кейс»: группы по одной заходят в комнату и берут из кейса сколько хотят, а на планшете пишут
+// сумму. «Баллы» получает та группа (или группы), что взяла больше всех; взяли поровну — все.
 const CHALLENGES_SEED = [
   [1, 'Шпионы', 'шпион', 'Группы по одной заходят в комнату. У одной группы сценка отличается — это шпионы. Рассказывать, что видели, нельзя — только задавать вопросы. Кто шпионы?', '', '', 1, 0, CHALLENGE_DISCIPLINE, ''],
   [2, '4 слова', 'слова', 'У каждой группы своё слово. Группы по очереди показывают их, а в конце пишут итоговое предложение из всех слов', 'Жираф;Пылесос;Свадьба;Космос', '', 1, 0, CHALLENGE_DISCIPLINE, ''],
-  [3, 'Кейс с деньгами', 'число', 'Сколько денег в кейсе? Баллы получит самый близкий ответ', '', '', 2, 60, CHALLENGE_DISCIPLINE, ''],
+  [3, 'Кейс с деньгами', 'кейс', 'Группы по одной заходят в комнату и берут из кейса сколько хотят. Взяли больше всех — балл только вам. Все взяли поровну — балл каждому.', '', '', 1, 0, CHALLENGE_DISCIPLINE, ''],
 ];
-const CH_TYPES = { 'выбор': 'choice', 'текст': 'text', 'число': 'number', 'слова': 'words', 'шпион': 'spy', 'шпионы': 'spy' };
+const CH_TYPES = { 'выбор': 'choice', 'текст': 'text', 'число': 'number', 'слова': 'words', 'шпион': 'spy', 'шпионы': 'spy', 'кейс': 'case' };
 
 // Вопросы IQ-теста уровня 11 класса (можно править прямо в листе «IQ вопросы»).
 // Колонки: №, вопрос, варианты A–D, правильная буква, баллы.
@@ -200,7 +202,7 @@ function ensureSheets_(force) {
   mk(SH.facts, ['№', 'Факт', 'О ком', 'Открыл', 'Угадал'], []);
   mk(SH.iqQ, ['№', 'Вопрос', 'A', 'B', 'C', 'D', 'Ответ (буква)', 'Баллы'], IQ_SEED);
   mk(SH.iqR, ['Время', 'Команда', 'Участники', 'Баллы', 'Из', 'Ответы', 'ID'], []);
-  mk(SH.challenges, ['№', 'Название', 'Тип (выбор / текст / число / слова / шпион)', 'Задание', 'Варианты (через ;)', 'Правильный ответ', 'Баллы', 'Секунд (0 — без таймера)', 'Дисциплина', 'Начислено'], CHALLENGES_SEED);
+  mk(SH.challenges, ['№', 'Название', 'Тип (выбор / текст / число / слова / шпион / кейс)', 'Задание', 'Варианты (через ;)', 'Правильный ответ', 'Баллы', 'Секунд (0 — без таймера)', 'Дисциплина', 'Начислено'], CHALLENGES_SEED);
   mk(SH.chAnswers, ['№ испытания', 'Команда', 'Ответ', 'Время', 'Проверка (+ / -)'], []);
   if (!ss.getSheetByName(SH.state)) {
     const sh = ss.insertSheet(SH.state);
@@ -383,6 +385,7 @@ function num_(s) {
 // число — баллы у самого близкого ответа (у всех, кто одинаково близко).
 function chResults_(ch, answers, teams) {
   if (ch.type === 'spy') return spyResults_(ch, answers, teams);
+  if (ch.type === 'case') return caseResults_(ch, answers, teams);
   const mine = answers.filter(a => a.id === ch.id);
   const variants = ch.correct.split('/').map(norm_).filter(Boolean);
   const target = num_(ch.correct);
@@ -425,6 +428,20 @@ function spyResults_(ch, answers, teams) {
   const found = rows.filter(r => r.ok).length;
   rows.unshift({ team: spy, spy: true, answer: vote(spy).answer, ok: null, manual: false, found: found, pts: found * 2 < rows.length ? ch.pts : 0 });
   return rows;
+}
+
+// «Кейс»: баллы у всех, кто взял максимальную сумму (взяли поровну — значит, у всех).
+function caseResults_(ch, answers, teams) {
+  const rows = teams.filter(t => !t.birthday).map(t => {
+    const a = answers.filter(x => x.id === ch.id && x.team === t.name)[0] || { answer: '', check: '' };
+    return { team: t.name, answer: a.answer, n: num_(a.answer), manual: parseCheck_(a.check) };
+  });
+  const nums = rows.map(r => r.n).filter(n => n !== null);
+  const max = nums.length ? Math.max.apply(null, nums) : null;
+  return rows.map(r => {
+    const ok = r.manual !== null ? r.manual : max === null ? null : r.n !== null && r.n === max;
+    return { team: r.team, answer: r.answer, ok: ok, manual: r.manual !== null, pts: ok ? ch.pts : 0 };
+  });
 }
 
 // Текущее испытание для планшетов: без правильного ответа, пока его не показали.
@@ -761,6 +778,27 @@ const ADMIN_ACTIONS = {
   chPresenter(b) {
     return mutate_(st => {
       st.challenge.presenter = str_(b.team) || null;
+      st.dataV++;
+    });
+  },
+
+  // Варианты испытания (для «4 слов» — слова групп по порядку через ;).
+  chSetOptions(b) {
+    const ch = readChallenges_().filter(c => c.id === Number(b.id))[0];
+    if (!ch) throw new Error('Нет такого испытания');
+    return mutate_(st => {
+      ss_().getSheetByName(SH.challenges).getRange(ch.row, 5).setValue(str_(b.value));
+      st.dataV++;
+    });
+  },
+
+  // Ответ за группу (например, сумму из кейса, которую посчитали ведущие).
+  chSetAnswer(b) {
+    return mutate_(st => {
+      const sh = ss_().getSheetByName(SH.chAnswers);
+      const row = readChAnswers_().filter(a => a.id === Number(b.id) && a.team === b.team)[0];
+      if (row) sh.getRange(row.row, 3, 1, 2).setValues([[str_(b.answer), now_()]]);
+      else sh.appendRow([Number(b.id), b.team, str_(b.answer), now_(), '']);
       st.dataV++;
     });
   },

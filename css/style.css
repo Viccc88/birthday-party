@@ -383,3 +383,4 @@ label { display: block; color: var(--muted); font-size: 14px; margin: 10px 0 4px
 .ch-current .btn span { display: block; font-size: 12px; }
 .ch-current .btn { flex-direction: column; }
 .ch-table td, .ch-table th { vertical-align: middle; }
+.case-input { width: 140px; padding: 6px 10px; font-size: 15px; }

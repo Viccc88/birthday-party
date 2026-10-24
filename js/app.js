@@ -572,11 +572,12 @@ function verdictIcon(ok) { return ok === true ? '<b class="ok">✓</b>' : ok ===
 
 // ----- Испытания для всех групп -----
 
-const CH_TYPE_TITLES = { choice: 'выбор', text: 'текст', number: 'число', words: '4 слова', spy: 'шпионы' };
+const CH_TYPE_TITLES = { choice: 'выбор', text: 'текст', number: 'число', words: '4 слова', spy: 'шпионы', case: 'кейс' };
 // Подпись «кто сейчас» для испытаний, где группы выходят по очереди.
 const CH_TURN = {
   words: { admin: '🎭', other: 'Показывает', mine: 'Ваша очередь показывать!', hint: 'Кто сейчас выходит показывать (под названием — слово группы). Предложение группы пишут в любой момент, пока приём открыт.' },
   spy: { admin: '🚪', other: 'Сейчас в комнате', mine: 'Ваша очередь заходить в комнату!', hint: 'Кто сейчас в комнате. Голосовать группы могут в любой момент, пока приём открыт.' },
+  case: { admin: '🚪', other: 'Сейчас в комнате', mine: 'Ваша очередь заходить в комнату!', hint: 'Кто сейчас в комнате. Сумму группа вводит на своём планшете — или впишите её сами в таблицу ниже.' },
 };
 
 // Своё секретное слово в «4 словах» приходит отдельным запросом.
@@ -613,6 +614,14 @@ function viewChallenge() {
         <span class="place">${r.spy ? '🕵️' : r.ok === true ? '✓' : r.ok === false ? '✗' : '?'}</span>
         <span class="who"><b>${esc(r.team)}</b><span class="muted small">${r.spy ? `шпионы · вычислили: ${r.found}` : r.answer ? 'голос: ' + esc(r.answer) : 'не голосовали'}</span></span>
         <span class="pts">${r.pts ? '+' + fmtPts(r.pts) : '0'}</span></li>`).join('')}</ol>`;
+  } else if (ch.phase === 'reveal' && ch.type === 'case') {
+    const winners = ch.results.filter(r => r.ok);
+    const all = winners.length && winners.length === ch.results.length;
+    body = `<div class="ch-correct">${all ? 'Все взяли поровну — <b>балл каждому!</b>' : winners.length ? `Больше всех взяли: <b>${esc(winners.map(r => r.team).join(', '))}</b>` : 'Никто ничего не взял'}</div>
+      <ol class="rating ch-results">${ch.results.map(r => `<li class="${r.team === team ? 'mine' : ''}">
+        <span class="place">${r.ok ? '💰' : '·'}</span>
+        <span class="who"><b>${esc(r.team)}</b><span class="muted small">${r.answer ? 'взяли: ' + esc(r.answer) : 'нет ответа'}</span></span>
+        <span class="pts">${r.pts ? '+' + fmtPts(r.pts) : '0'}</span></li>`).join('')}</ol>`;
   } else if (ch.phase === 'reveal') {
     body = `<div class="ch-correct">${words ? 'Правильное предложение:' : 'Правильный ответ:'} <b>${esc(ch.correct) || '—'}</b></div>
       ${ch.words ? `<div class="ch-words">${ch.words.map(w => `<span><b>${esc(w.word)}</b>${esc(w.team)}</span>`).join('')}</div>` : ''}
@@ -626,14 +635,14 @@ function viewChallenge() {
     body = `<p class="notice">Приём ответов закрыт</p>${mine ? `<p class="center">Ваш ответ: <b>${esc(mine)}</b></p>` : ''}`;
   } else {
     const id = `ch-ans-${ch.id}`;
-    const q = words ? 'Итоговое предложение из всех слов' : 'Ваш ответ';
+    const q = words ? 'Итоговое предложение из всех слов' : ch.type === 'case' ? 'Сколько вы взяли из кейса?' : 'Ваш ответ';
     if (spy) {
       body = `<label>Кто шпионы?</label><div class="iq-opts">${ch.options.filter(o => o !== team).map(o => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}"><b>🕵️</b>${esc(o)}</button>`).join('')}</div>`;
     } else if (ch.type === 'choice') {
       body = `<div class="iq-opts">${ch.options.map((o, i) => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}"><b>${'ABCDEFGH'[i] || i + 1}</b>${esc(o)}</button>`).join('')}</div>`;
     } else {
-      const input = ch.type === 'number'
-        ? `<input id="${id}" data-draft inputmode="decimal" value="${esc(mine)}" placeholder="число" autocomplete="off">`
+      const input = ch.type === 'number' || ch.type === 'case'
+        ? `<input id="${id}" data-draft inputmode="decimal" value="${esc(mine)}" placeholder="${ch.type === 'case' ? 'сумма' : 'число'}" autocomplete="off">`
         : words
           ? `<textarea id="${id}" data-draft rows="2" placeholder="предложение">${esc(mine)}</textarea>`
           : `<input id="${id}" data-draft value="${esc(mine)}" placeholder="ответ" autocomplete="off">`;
@@ -961,7 +970,9 @@ function adminChallenges() {
       ${results.length ? `<table class="res-table ch-table"><thead><tr><th>Группа</th><th>Ответ</th><th>Проверка</th><th>Баллы</th></tr></thead><tbody>
         ${results.map(r => r.spy
           ? `<tr><th>🕵️ ${esc(r.team)}</th><td>шпионы${r.answer ? ` · голос: ${esc(r.answer)}` : ''}</td><td>вычислили: ${r.found}</td><td>${fmtPts(r.pts)}</td></tr>`
-          : `<tr><th>${esc(r.team)}</th><td>${esc(r.answer) || '<span class="muted">—</span>'}</td>
+          : `<tr><th>${esc(r.team)}</th><td>${ch.type === 'case'
+            ? `<input id="case-${ch.id}-${esc(r.team)}" class="case-input" data-draft data-change="chSetAnswer" data-id="${ch.id}" data-team="${esc(r.team)}" inputmode="decimal" value="${esc(r.answer)}" placeholder="сумма">`
+            : esc(r.answer) || '<span class="muted">—</span>'}</td>
             <td class="vcell ${r.ok === true ? 'is-ok' : r.ok === false ? 'is-bad' : ''}" data-act="chVerdict" data-id="${ch.id}" data-team="${esc(r.team)}" data-ok="${r.ok}" data-manual="${r.manual}">${verdictIcon(r.ok)}${r.manual ? ' ✎ вручную' : ' авто'}</td>
             <td>${fmtPts(r.pts)}</td></tr>`).join('')}</tbody></table>
         <p class="muted small">Нажмите на проверку, чтобы засчитать вручную: авто → ✓ → ✗ → авто. После исправлений нажмите «Начислить» ещё раз — добавится только разница.</p>` : ''}
@@ -970,16 +981,19 @@ function adminChallenges() {
   return `<div class="cards-grid">${current}
     <section class="card span2">
       <div class="row between"><h2>🎯 Испытания</h2><button class="btn ghost" data-act="refresh">↻ Перечитать таблицу</button></div>
-      <p class="muted small">Задания, варианты, баллы и таймер — в листе «Испытания». Тип: выбор / текст / число / слова / шпион. Баллы идут в дисциплину из колонки «Дисциплина».</p>
+      <p class="muted small">Задания, варианты, баллы и таймер — в листе «Испытания». Тип: выбор / текст / число / слова / шпион / кейс. Баллы идут в дисциплину из колонки «Дисциплина».</p>
       <div class="ch-list">${list.map(c => `<div class="ch-item ${c.id === cur.id ? 'cur' : ''}">
         <div class="ch-item-head"><b>${c.id}. ${esc(c.name)}</b><span class="pill">${esc(CH_TYPE_TITLES[c.type])}</span>
           <span class="muted small">${fmtPts(c.pts)} б.${c.seconds ? ` · ${c.seconds} с` : ''}</span>
           <button class="btn ${c.id === cur.id ? 'active' : ''}" data-act="chStart" data-id="${c.id}">${c.id === cur.id ? 'Перезапустить' : '▶ Запустить'}</button></div>
         <div class="muted small">${esc(c.task)}${c.options.length ? ` — <b>${esc(c.options.join(' · '))}</b>` : ''}</div>
-        <label class="room-row"><span class="room-n">${c.type === 'words' ? 'Правильное предложение' : c.type === 'spy' ? 'Шпионы (секрет)' : 'Правильный ответ'}</span>
+        ${c.type === 'words' || c.type === 'choice' ? `<label class="room-row"><span class="room-n">${c.type === 'words' ? 'Слова групп (через ;)' : 'Варианты (через ;)'}</span>
+          <input id="opt-ch-${c.id}" data-draft data-change="chSetOptions" data-id="${c.id}" value="${esc(c.options.join(';'))}" placeholder="${c.type === 'words' ? teams.map((t, i) => 'слово ' + (i + 1)).join(';') : 'Правда;Ложь'}" autocomplete="off"></label>
+          ${c.type === 'words' ? `<div class="muted small">${teams.map((t, i) => `${esc(t)}: <b>${esc(c.options[i] || '—')}</b>`).join(' · ')}</div>` : ''}` : ''}
+        ${c.type === 'case' ? '' : `<label class="room-row"><span class="room-n">${c.type === 'words' ? 'Правильное предложение' : c.type === 'spy' ? 'Шпионы (секрет)' : 'Правильный ответ'}</span>`}
           ${c.type === 'spy'
             ? `<select id="cor-ch-${c.id}" data-draft data-change="chSetCorrect" data-id="${c.id}"><option value="">— выберите —</option>${teams.map(t => `<option ${t === c.correct ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`
-            : `<input id="cor-ch-${c.id}" data-draft data-change="chSetCorrect" data-id="${c.id}" value="${esc(c.correct)}" placeholder="${c.type === 'number' ? 'число' : c.type === 'choice' ? 'один из вариантов' : 'можно несколько через /'}" autocomplete="off">`}</label>
+            : c.type === 'case' ? '' : `<input id="cor-ch-${c.id}" data-draft data-change="chSetCorrect" data-id="${c.id}" value="${esc(c.correct)}" placeholder="${c.type === 'number' ? 'число' : c.type === 'choice' ? 'один из вариантов' : 'можно несколько через /'}" autocomplete="off">`}${c.type === 'case' ? '' : '</label>'}
       </div>`).join('')}</div>
     </section>
   </div>`;
@@ -1235,6 +1249,16 @@ const ACTIONS = {
 };
 
 const CHANGES = {
+  async chSetOptions(el) {
+    await act('chSetOptions', { id: Number(el.dataset.id), value: el.value.trim() });
+    delete drafts[el.id];
+    toast('Сохранено', 'ok');
+  },
+  async chSetAnswer(el) {
+    await act('chSetAnswer', { id: Number(el.dataset.id), team: el.dataset.team, answer: el.value.trim() });
+    delete drafts[el.id];
+    toast('Сумма сохранена', 'ok');
+  },
   async chSetCorrect(el) {
     await act('chSetCorrect', { id: Number(el.dataset.id), value: el.value.trim() });
     delete drafts[el.id];
