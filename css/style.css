@@ -328,3 +328,38 @@ label { display: block; color: var(--muted); font-size: 14px; margin: 10px 0 4px
   .screen-btns { grid-template-columns: 1fr; }
   .brand { font-size: 15px; }
 }
+
+/* ---------- Кнопка «Кто первый» ---------- */
+#buzz {
+  position: fixed; inset: 0; z-index: 90;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+  padding: 20px; text-align: center;
+  background: #0d1a3a;
+}
+#buzz[hidden] { display: none; }
+#buzz.buzz-go { animation: alarm-bg .5s steps(1) infinite; }
+#buzz.buzz-pressed, #buzz.buzz-result { background: radial-gradient(800px 500px at 50% 30%, #3a1f6e, #140b24); }
+.buzz-title { font-family: var(--head); font-weight: 900; font-size: clamp(40px, 11vw, 120px); line-height: 1; color: #fff; }
+.buzz-sub { font-size: clamp(18px, 3vw, 26px); font-weight: 700; color: #fff; opacity: .9; max-width: 700px; }
+.buzz-btn {
+  width: min(70vw, 52vh); aspect-ratio: 1; border-radius: 50%; border: 0;
+  font-family: var(--head); font-weight: 900; font-size: clamp(32px, 7vw, 72px);
+  cursor: pointer; touch-action: manipulation; user-select: none; -webkit-user-select: none;
+}
+.buzz-btn.go { background: radial-gradient(circle at 35% 30%, #fff 0 6%, #ffdd33 7% 100%); color: #8a0010; box-shadow: 0 0 0 10px #fff, 0 0 60px #fff; }
+.buzz-btn:active { transform: scale(.96); }
+.buzz-list { list-style: none; padding: 0; margin: 0; min-width: min(90vw, 420px); }
+.buzz-list li { display: flex; justify-content: space-between; gap: 20px; font-size: 22px; font-weight: 700; padding: 8px 14px; border-bottom: 1px solid #ffffff22; }
+.buzz-list li.mine { background: #ffcc3333; border-radius: 10px; }
+.alarm-box .btn.big.buzz-start { background: linear-gradient(135deg, var(--gold), #ff9a1f); font-size: 17px; }
+.buzz-admin-status { font-family: var(--head); font-size: 18px; }
+#bz-pts { width: 80px; flex: none; min-width: 0; }
+
+/* ---------- Баллы ---------- */
+.rating li.mine { box-shadow: inset 0 0 0 2px var(--gold); border-radius: 12px; }
+.scores-table td, .scores-table thead th { text-align: center; }
+.score-cell { white-space: nowrap; }
+.score-cell b { display: inline-block; min-width: 34px; font-size: 18px; }
+.mini { width: 30px; height: 30px; border-radius: 8px; border: 0; background: var(--card2); color: var(--text); font-size: 18px; font-weight: 800; cursor: pointer; }
+.mini:hover { background: var(--pink); }
+.total-row td, .total-row th { color: var(--gold); font-size: 18px; border-top: 2px solid var(--gold); }

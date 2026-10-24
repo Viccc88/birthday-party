@@ -28,6 +28,7 @@ const SCREEN_TITLES = {
   words: '4 слова',
   results: 'Результаты',
   sigame: 'Своя игра',
+  scores: 'Таблица баллов',
 };
 const GAME_TITLES = { iq: 'IQ-тест', items: 'Предметы в комнатах', words: '4 слова' };
 
@@ -47,6 +48,8 @@ const app = {
   adminTab: store.get('adminTab', 'control'),
   viewKey: '',
   busy: {},
+  offset: 0, // серверное время минус локальное
+  bestRtt: Infinity,
 };
 let drafts = {};
 
@@ -129,6 +132,22 @@ const sound = {
     try { this.siren.oscs.forEach(o => o.stop()); this.siren.lfo.stop(); this.siren.out.disconnect(); } catch (e) {}
     this.siren = null;
   },
+  fanfare() {
+    if (!this.ctx) return;
+    const c = this.ctx;
+    [523, 659, 784, 1047, 784, 1047].forEach((f, i) => {
+      const o = c.createOscillator();
+      const g = c.createGain();
+      o.type = 'triangle';
+      o.frequency.value = f;
+      const t = c.currentTime + i * 0.13;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(0.35, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + (i === 5 ? 0.9 : 0.25));
+      o.connect(g); g.connect(c.destination);
+      o.start(t); o.stop(t + 1);
+    });
+  },
   chime() {
     if (!this.ctx) return;
     const c = this.ctx;
@@ -159,7 +178,9 @@ let pollTimer = null;
 async function poll() {
   clearTimeout(pollTimer);
   try {
+    const t0 = Date.now();
     const j = await apiGet({ a: 'state', d: deviceName() });
+    syncClock(j.now, t0, Date.now());
     setOnline(true);
     onState(j.state);
   } catch (e) {
@@ -168,6 +189,14 @@ async function poll() {
     pollTimer = setTimeout(poll, document.hidden ? 6000 : POLL_MS);
   }
 }
+
+// Оценка разницы часов с сервером по самому быстрому из недавних запросов.
+function syncClock(now, t0, t1) {
+  if (!now) return;
+  app.bestRtt *= 1.05;
+  if (t1 - t0 <= app.bestRtt) { app.bestRtt = t1 - t0; app.offset = now - (t0 + t1) / 2; }
+}
+function serverNow() { return Date.now() + app.offset; }
 
 function setOnline(v) {
   if (app.online === v) return;
@@ -186,6 +215,7 @@ function onState(st) {
   if (isAdmin() && (!prev || prev.dataV !== st.dataV || Date.now() - app.adminAt > 10000)) loadAdmin();
   if (prev && prev.screen !== st.screen && !isAdmin()) { sound.chime(); app.tab = 'now'; }
   renderAlarm();
+  renderBuzzer();
   renderView();
 }
 
@@ -248,7 +278,7 @@ function renderView(force) {
     return;
   }
   const st = app.state ? Object.assign({}, app.state, { v: 0, alarm: null }) : null;
-  const key = JSON.stringify([app.tab, app.adminTab, st, app.dataRaw.length, app.dataRaw, isAdmin() ? app.adminRaw : '', iqLocal()]);
+  const key = JSON.stringify([app.tab, app.adminTab, st, app.dataRaw, isAdmin() ? app.adminRaw : '', iqLocal()]);
   if (!force && key === app.viewKey) return;
   app.viewKey = key;
   const html = isAdmin() ? viewAdmin() : viewGuest();
@@ -330,7 +360,7 @@ function shellGuest() {
   return `<header class="top">
       <div class="brand">🎂 <b>${esc(app.role.type === 'team' ? app.role.team : 'Экран')}</b></div>
       <div id="hdr-now" class="hdr-now"></div>
-      <nav class="tabs"><button data-tab="now">Сейчас</button><button data-tab="plan">План</button></nav>
+      <nav class="tabs"><button data-tab="now">Сейчас</button><button data-tab="plan">План</button><button data-tab="scores">Баллы</button></nav>
       <span id="net" class="net on"></span>
       <button class="icon-btn" data-act="logout" title="Сменить устройство">⚙</button>
     </header>
@@ -347,6 +377,7 @@ function headerNow() {
 function viewGuest() {
   if (!app.state || !app.data) return `<div class="loading">Загрузка…</div>`;
   if (app.tab === 'plan') return viewPlan();
+  if (app.tab === 'scores') return viewScores(app.data.scores);
   switch (app.state.screen) {
     case 'facts': return viewFacts(false);
     case 'iq': return viewIq();
@@ -354,6 +385,7 @@ function viewGuest() {
     case 'words': return viewRoomForm('words');
     case 'results': return viewResults(app.state.results);
     case 'sigame': return viewSigame();
+    case 'scores': return viewScores(app.data.scores);
     default: return viewWelcome();
   }
 }
@@ -603,10 +635,41 @@ function viewSigame() {
   </section>`;
 }
 
+// ----- Таблица баллов -----
+
+const fmtPts = n => String(Math.round(n * 100) / 100).replace('.', ',');
+
+function viewScores(sc) {
+  if (!sc) return `<section class="card narrow center"><div class="big-emoji">🙈</div><h2>Баллы пока скрыты</h2><p class="muted">Именинники покажут их позже</p></section>`;
+  const order = sc.teams.map((t, i) => i).sort((a, b) => sc.totals[b] - sc.totals[a]);
+  return `<section class="card narrow">
+      <h1>🏆 Таблица баллов</h1>
+      <ol class="rating">${order.map((i, k) => `<li class="${myTeam() === sc.teams[i] ? 'mine' : ''}">
+        <span class="place">${MEDALS[k] || k + 1}</span>
+        <span class="who"><b>${esc(sc.teams[i])}</b></span>
+        <span class="pts">${fmtPts(sc.totals[i])}</span></li>`).join('')}</ol>
+    </section>
+    <section class="card">
+      <h2>По дисциплинам</h2>
+      ${scoresTable(sc, false)}
+    </section>`;
+}
+
+function scoresTable(sc, adminMode) {
+  const cell = (r, i) => adminMode
+    ? `<td class="score-cell"><button class="mini" data-act="scoreAdd" data-d="${esc(r.name)}" data-team="${esc(sc.teams[i])}" data-delta="-1">−</button><b>${fmtPts(r.pts[i])}</b><button class="mini" data-act="scoreAdd" data-d="${esc(r.name)}" data-team="${esc(sc.teams[i])}" data-delta="1">+</button></td>`
+    : `<td>${r.pts[i] ? fmtPts(r.pts[i]) : '<span class="muted">—</span>'}</td>`;
+  return `<div class="table-wrap"><table class="res-table scores-table">
+    <thead><tr><th>Дисциплина</th>${sc.teams.map(t => `<th>${esc(t)}</th>`).join('')}</tr></thead>
+    <tbody>${sc.rows.map(r => `<tr><th>${esc(r.name)}</th>${sc.teams.map((t, i) => cell(r, i)).join('')}</tr>`).join('')}
+      <tr class="total-row"><th>Итого</th>${sc.totals.map(t => `<td><b>${fmtPts(t)}</b></td>`).join('')}</tr></tbody>
+  </table></div>`;
+}
+
 // ===================== Пульт именинников =====================
 
 const ADMIN_TABS = [
-  ['control', '🎛 Пульт'], ['plan', '🗓 План'], ['facts', '🃏 Факты'], ['iq', '🧠 IQ-тест'],
+  ['control', '🎛 Пульт'], ['scores', '🏆 Баллы'], ['plan', '🗓 План'], ['facts', '🃏 Факты'], ['iq', '🧠 IQ-тест'],
   ['items', '🔎 Предметы'], ['words', '🧩 4 слова'], ['sigame', '🎯 Своя игра'],
 ];
 
@@ -625,6 +688,7 @@ function shellAdmin() {
           <button class="btn ghost" data-act="alarmOff">Отбой</button>
           <div id="alarm-status" class="small"></div>
         </div>
+        <div id="buzz-box" class="alarm-box"></div>
         <nav class="side-nav">${ADMIN_TABS.map(([k, t]) => `<button data-atab="${k}">${t}</button>`).join('')}</nav>
       </aside>
       <main id="main" class="main admin-main"></main>
@@ -634,8 +698,6 @@ function shellAdmin() {
 function viewAdmin() {
   const st = app.state;
   const a = app.admin;
-  const s = $('#alarm-status');
-  if (s && st) s.innerHTML = st.alarm.on ? `<span class="bad blink">● Сбор объявлен${st.alarm.msg ? ': ' + esc(st.alarm.msg) : ''}</span>` : '<span class="muted">Сбора нет</span>';
   if (!st || !a || !app.data) return `<div class="loading">Загрузка…</div>`;
   const nowBar = `<div class="now-bar">На планшетах: <b>${esc(SCREEN_TITLES[st.screen] || st.screen)}${st.screen === 'results' ? ' — ' + esc(GAME_TITLES[st.results]) : ''}</b></div>`;
   switch (app.adminTab) {
@@ -645,6 +707,7 @@ function viewAdmin() {
     case 'items': return nowBar + adminGame('items');
     case 'words': return nowBar + adminGame('words');
     case 'sigame': return nowBar + adminSigame();
+    case 'scores': return nowBar + adminScores();
     default: return nowBar + adminControl();
   }
 }
@@ -675,6 +738,7 @@ function adminControl() {
         ${screenBtn('results', '🏆 Итоги: предметы', 'data-results="items"')}
         ${screenBtn('results', '🏆 Итоги: 4 слова', 'data-results="words"')}
         ${screenBtn('sigame', '🎯 Своя игра')}
+        ${screenBtn('scores', '🏆 Таблица баллов')}
       </div>
     </section>
     <section class="card">
@@ -688,6 +752,17 @@ function adminControl() {
       ${adminPlanList(true)}
     </section>
   </div>`;
+}
+
+function adminScores() {
+  const sc = app.admin.scores;
+  return `<section class="card">
+      <div class="row between"><h2>🏆 Баллы групп</h2>${screenBtn('scores', app.state.screen === 'scores' ? 'Баллы на планшетах' : '▶ Показать на планшетах')}</div>
+      <label class="check"><input type="checkbox" data-act="scoresVisible" ${app.state.scoresHidden ? '' : 'checked'}> гости видят баллы (вкладка «Баллы» на планшетах)</label>
+      <p class="muted small">+ / − сразу меняют лист «Баллы». Дробные баллы и названия дисциплин можно править прямо в таблице.</p>
+      ${scoresTable(sc, true)}
+      <div class="row"><input id="disc-name" data-draft placeholder="Новая дисциплина" autocomplete="off"><button class="btn ghost" data-act="disciplineAdd">+ Добавить дисциплину</button></div>
+    </section>`;
 }
 
 function adminPlanList(compact) {
@@ -730,7 +805,7 @@ function adminFacts() {
       <div class="turn-box">
         <label>Кто открывает следующий:</label>
         <div class="row">
-          <select id="turn-who"><option value="">— выберите —</option>${peopleOptions(f.turn)}</select>
+          <select id="turn-who" data-draft><option value="">— выберите —</option>${peopleOptions(f.turn)}</select>
           <button class="btn" data-act="factsTurn">Дать ход</button>
           <button class="btn ghost" data-act="factsRandom" title="Из тех, кто ещё не открывал">🎲 Случайный</button>
         </div>
@@ -846,6 +921,8 @@ function adminSigame() {
 function renderAlarm() {
   const el = $('#alarm');
   const al = app.state && app.state.alarm;
+  const s = $('#alarm-status');
+  if (s && al) s.innerHTML = al.on ? `<span class="bad blink">● Сбор объявлен${al.msg ? ': ' + esc(al.msg) : ''}</span>` : '<span class="muted">Сбора нет</span>';
   const show = app.started && !isAdmin() && al && al.on && store.get('alarmSeen', 0) !== al.id;
   if (!show) {
     if (!el.hidden) { el.hidden = true; el.innerHTML = ''; }
@@ -860,6 +937,99 @@ function renderAlarm() {
     sound.startSiren();
     if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
   }
+}
+
+// ===================== Кнопка «Кто первый» =====================
+
+const secFmt = ms => (ms / 1000).toFixed(2).replace('.', ',') + ' с';
+function buzzLocal() { return store.get('buzz', {}); }
+let buzzTimer = null;
+
+// Внезапная тревога-кнопка: пульт запускает её в любой момент дня, на всех планшетах
+// одновременно (в общий момент startAt) воет сирена. Время считается от startAt по часам
+// сервера, поэтому планшет, получивший сигнал позже, не проигрывает и не выигрывает.
+function renderBuzzer() {
+  if (isAdmin()) { renderBuzzAdmin(); return; }
+  const el = $('#buzz');
+  const bz = app.state && app.state.buzzer;
+  clearTimeout(buzzTimer);
+  const waiting = bz && bz.on && !bz.done && serverNow() < bz.startAt;
+  if (waiting) buzzTimer = setTimeout(renderBuzzer, Math.max(0, bz.startAt - serverNow()));
+  if (!app.started || !bz || !bz.on || waiting || store.get('buzzSeen', 0) === bz.id) {
+    if (!el.hidden) { el.hidden = true; el.innerHTML = ''; el.dataset.key = ''; sound.stopSiren(); }
+    return;
+  }
+  const team = myTeam();
+  const mine = buzzLocal().id === bz.id ? buzzLocal() : {};
+  const phase = bz.done ? 'result' : mine.ms !== undefined ? 'pressed' : 'go';
+  const key = bz.id + phase + (phase === 'result' ? JSON.stringify(bz.presses) : '');
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  el.className = 'buzz-' + phase;
+  el.hidden = false;
+  if (phase === 'go') {
+    el.innerHTML = `<div class="buzz-title">ТРЕВОГА!</div>
+      <div class="buzz-sub">Кто первым нажмёт — получит ${bz.points ? '+' + bz.points : 'победу'}</div>
+      ${team ? '<button class="buzz-btn go" id="buzz-btn">ЖМИ!</button>' : ''}`;
+    sound.startSiren();
+    if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
+  } else if (phase === 'pressed') {
+    sound.stopSiren();
+    el.innerHTML = `<div class="buzz-title">Нажато!</div><div class="buzz-sub">Ваше время: <b>${secFmt(mine.ms)}</b><br>Ждём остальных…</div>`;
+  } else {
+    sound.stopSiren();
+    const list = Object.keys(bz.presses).sort((a, b) => bz.presses[a] - bz.presses[b]);
+    const won = bz.winner && bz.winner === team;
+    if (won) sound.fanfare();
+    el.innerHTML = `<div class="buzz-title">${bz.winner ? (won ? 'ВЫ ПЕРВЫЕ! 🎉' : esc(bz.winner) + ' — первые!') : 'Никто не успел'}</div>
+      ${bz.winner && bz.points ? `<div class="buzz-sub">+${bz.points} в «${esc(bz.discipline)}»</div>` : ''}
+      <ol class="buzz-list">${list.map((t, i) => `<li class="${t === team ? 'mine' : ''}">${MEDALS[i] || i + 1} ${esc(t)} <span>${secFmt(bz.presses[t])}</span></li>`).join('')}</ol>
+      <button class="btn big alarm-ok" data-act="buzzSeen">OK</button>`;
+  }
+  const btn = $('#buzz-btn');
+  if (btn) btn.addEventListener('pointerdown', buzzPress, { once: true });
+}
+
+async function buzzPress(e) {
+  e.preventDefault();
+  const bz = app.state.buzzer;
+  const local = { id: bz.id, ms: Math.max(0, Math.round(serverNow() - bz.startAt)) };
+  store.set('buzz', local);
+  renderBuzzer();
+  try {
+    const j = await apiPost(Object.assign({ a: 'buzzerPress', team: myTeam() }, local));
+    onState(j.state);
+  } catch (err) { toast(err.message, 'err'); }
+}
+
+let finalizing = 0;
+function renderBuzzAdmin() {
+  const box = $('#buzz-box');
+  const bz = app.state && app.state.buzzer;
+  if (!box || !bz || !app.admin) return;
+  const pressed = Object.keys(bz.presses).sort((a, b) => bz.presses[a] - bz.presses[b]);
+  // Итог подводится сам через 3 с после первого нажатия.
+  if (bz.on && !bz.done && bz.firstAt && serverNow() > bz.firstAt + 3000 && finalizing !== bz.id) {
+    finalizing = bz.id;
+    act('buzzerFinalize').catch(() => { finalizing = 0; });
+  }
+  let html;
+  if (bz.on && !bz.done) {
+    html = `<div class="buzz-admin-status">🔔 ${serverNow() < bz.startAt ? 'Сигнал скоро…' : 'Сигнал дан!'}</div>
+      <div class="small">${pressed.map(t => `${esc(t)} — ${secFmt(bz.presses[t])}`).join('<br>') || '<span class="muted">Пока никто не нажал</span>'}</div>
+      <div class="row"><button class="btn ghost" data-act="buzzerFinalize">Итог</button><button class="btn ghost" data-act="buzzerClose">Отменить</button></div>`;
+  } else if (bz.on && bz.done) {
+    html = `<div class="buzz-admin-status">🏆 ${bz.winner ? esc(bz.winner) + (bz.points ? ` +${bz.points}` : '') : 'Никто не нажал'}</div>
+      <div class="small">${pressed.map(t => `${esc(t)} — ${secFmt(bz.presses[t])}`).join('<br>')}</div>
+      <button class="btn ghost" data-act="buzzerClose">Закрыть на планшетах</button>`;
+  } else {
+    const rows = (app.admin.scores && app.admin.scores.rows) || [];
+    const def = drafts['bz-disc'] || (rows.find(r => /Кто первый/.test(r.name)) || rows[0] || {}).name;
+    html = `<select id="bz-disc" data-draft>${rows.map(r => `<option ${r.name === def ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
+      <div class="row"><span class="small muted">Баллов победителю:</span><input id="bz-pts" data-draft type="number" value="1" min="0" step="1"></div>
+      <button class="btn big buzz-start" data-act="buzzerStart">🚨 Тревога-кнопка</button>`;
+  }
+  if (box.dataset.html !== html) { box.dataset.html = html; paint(box, html); }
 }
 
 // ===================== Обработчики =====================
@@ -884,6 +1054,19 @@ const ACTIONS = {
     logout();
   },
   alarmSeen() { store.set('alarmSeen', app.state.alarm.id); renderAlarm(); },
+  buzzSeen() { store.set('buzzSeen', app.state.buzzer.id); renderBuzzer(); },
+  buzzerStart() { act('buzzerStart', { discipline: $('#bz-disc').value, points: Number($('#bz-pts').value) || 0 }); },
+  buzzerFinalize() { act('buzzerFinalize'); },
+  buzzerClose() { act('buzzerClose'); },
+  scoreAdd(el) { act('scoreAdd', { discipline: el.dataset.d, team: el.dataset.team, delta: Number(el.dataset.delta) }); },
+  scoresVisible(el) { act('scoresVisible', { on: el.checked }); },
+  async disciplineAdd() {
+    const name = $('#disc-name').value.trim();
+    if (!name) return toast('Введите название', 'err');
+    await act('disciplineAdd', { name });
+    delete drafts['disc-name'];
+    $('#disc-name').value = '';
+  },
 
   // --- гости ---
   async openFact(el) {

@@ -19,11 +19,15 @@ const SH = {
   iqR: 'IQ результаты',
   answers: 'Ответы команд',
   correct: 'Правильные ответы',
+  scores: 'Баллы',
   state: '_state',
 };
 const BIRTHDAY_TEAM = 'Именинники';
 const GAMES = { items: 'Предметы', words: '4 слова' };
-const SCREENS = ['plan', 'facts', 'iq', 'items', 'words', 'results', 'sigame'];
+const SCREENS = ['plan', 'facts', 'iq', 'items', 'words', 'results', 'sigame', 'scores'];
+const BUZZER_DISCIPLINE = 'Кнопка «Кто первый»';
+// Стартовые дисциплины листа «Баллы» (строки можно менять прямо в таблице).
+const DISCIPLINES_SEED = ['Знакомство по фактам', 'Мафия / бункер', 'IQ-тест', 'Своя игра', 'Ассоциации', BUZZER_DISCIPLINE];
 
 // Вопросы IQ-теста уровня 11 класса (можно править прямо в листе «IQ вопросы»).
 // Колонки: №, вопрос, варианты A–D, правильная буква, баллы.
@@ -71,7 +75,7 @@ function route_(p, b) {
   const a = b.a || p.a;
   if (a === 'state') {
     if (p.d) cache_().put('seen_' + p.d, String(Date.now()), 600);
-    return { ok: true, state: getState_() };
+    return { ok: true, state: getState_(), now: Date.now() };
   }
   if (a === 'data') return { ok: true, data: getPublicData_() };
   if (a === 'login') { checkPin_(b.pin || p.pin); return { ok: true }; }
@@ -164,7 +168,7 @@ function withLock_(fn) {
 }
 
 function ensureSheets_(force) {
-  if (!force && cache_().get('ensured')) return;
+  if (!force && cache_().get('ensured2')) return;
   const ss = ss_();
   const mk = (name, header, rows) => {
     if (ss.getSheetByName(name)) return;
@@ -190,7 +194,11 @@ function ensureSheets_(force) {
     sh.getRange(1, 1).setValue(JSON.stringify(defaultState_()));
     sh.hideSheet();
   }
-  cache_().put('ensured', '1', 21600);
+  if (!ss.getSheetByName(SH.scores)) {
+    const teams = readTeams_(readSettings_()).filter(t => !t.birthday).map(t => t.name);
+    mk(SH.scores, ['Дисциплина'].concat(teams), DISCIPLINES_SEED.map(d => [d].concat(teams.map(() => ''))));
+  }
+  cache_().put('ensured2', '1', 21600);
 }
 
 // ===================== Состояние (общий «пульт») =====================
@@ -209,6 +217,8 @@ function defaultState_() {
     items: { open: false },
     words: { open: false },
     sigame: '',
+    scoresHidden: false,
+    buzzer: { id: 0, on: false, discipline: '', points: 1, startAt: 0, presses: {}, firstAt: 0, winner: null, done: false },
   };
 }
 
@@ -423,6 +433,7 @@ function getPublicData_() {
     rooms: { items: settings.itemsRooms, words: settings.wordsRooms },
     submitted: submitted,
     iqDone: iqDone_(),
+    scores: st.scoresHidden ? null : readScores_(),
   };
   if (showResults) {
     const correct = readCorrect_();
@@ -457,12 +468,67 @@ function getAdminData_() {
     items: computeGame_('items', teams, settings, answers, correct, true),
     words: computeGame_('words', teams, settings, answers, correct, true),
     seen: seen,
+    scores: readScores_(),
   };
 }
 
 // ===================== Действия команд (планшеты) =====================
 
+// ===================== Баллы команд =====================
+
+// Лист «Баллы»: строки — дисциплины, колонки — группы.
+function readScores_() {
+  const teams = readTeams_(readSettings_()).filter(t => !t.birthday).map(t => t.name);
+  const vals = rows_(SH.scores);
+  const header = (vals[0] || []).map(str_);
+  const rows = vals.slice(1).filter(r => str_(r[0])).map(r => ({
+    name: str_(r[0]),
+    pts: teams.map(t => { const c = header.indexOf(t); return c > 0 ? Number(String(r[c]).replace(',', '.')) || 0 : 0; }),
+  }));
+  const totals = teams.map((t, i) => rows.reduce((sum, r) => sum + r.pts[i], 0));
+  return { teams: teams, rows: rows, totals: totals };
+}
+
+// Прибавить баллы группе в дисциплине (строка и колонка создаются, если их нет).
+function addScore_(discipline, team, delta) {
+  const sh = ss_().getSheetByName(SH.scores);
+  const vals = sh.getDataRange().getDisplayValues();
+  let col = vals[0].map(str_).indexOf(team);
+  if (col < 0) { col = vals[0].length; sh.getRange(1, col + 1).setValue(team); }
+  let row = vals.findIndex((r, i) => i > 0 && str_(r[0]) === discipline);
+  if (row < 0) { sh.appendRow([discipline]); row = sh.getLastRow() - 1; }
+  const cell = sh.getRange(row + 1, col + 1);
+  const cur = Number(String(cell.getValue()).replace(',', '.')) || 0;
+  cell.setValue(cur + Number(delta));
+}
+
+// Победитель кнопки — у кого меньше время реакции; ему баллы.
+function buzzerFinalize_(st) {
+  const bz = st.buzzer;
+  if (!bz.on || bz.done) return;
+  const teams = Object.keys(bz.presses).sort((x, y) => bz.presses[x] - bz.presses[y]);
+  bz.winner = teams[0] || null;
+  bz.done = true;
+  if (bz.winner && bz.points) {
+    addScore_(bz.discipline || BUZZER_DISCIPLINE, bz.winner, bz.points);
+    st.dataV++;
+  }
+}
+
 const TEAM_ACTIONS = {
+  // Нажатие кнопки «Кто первый»: ms — сколько прошло от общего старта тревоги до нажатия.
+  buzzerPress(b) {
+    return mutate_(st => {
+      const bz = st.buzzer;
+      if (!bz.on || bz.done || Number(b.id) !== bz.id) throw new Error('Раунд уже закончился');
+      if (bz.presses[b.team] !== undefined) return;
+      bz.presses[b.team] = Math.max(0, Math.round(Number(b.ms) || 0));
+      if (!bz.firstAt) bz.firstAt = Date.now();
+      const teams = readTeams_(readSettings_()).filter(t => !t.birthday);
+      if (teams.every(t => bz.presses[t.name] !== undefined)) buzzerFinalize_(st);
+    });
+  },
+
   // Гость открывает ячейку с фактом.
   factOpen(b) {
     let fact = null;
@@ -596,6 +662,42 @@ const ADMIN_ACTIONS = {
   setLink(b) { return mutate_(st => { st.sigame = str_(b.url); }); },
 
   refresh() { return mutate_(st => { st.dataV++; }); },
+
+  // --- Баллы ---
+  scoreAdd(b) {
+    return mutate_(st => { addScore_(str_(b.discipline), str_(b.team), Number(b.delta) || 0); st.dataV++; });
+  },
+
+  disciplineAdd(b) {
+    const name = str_(b.name);
+    if (!name) throw new Error('Пустое название');
+    return mutate_(st => {
+      if (readScores_().rows.some(r => r.name === name)) throw new Error('Такая дисциплина уже есть');
+      ss_().getSheetByName(SH.scores).appendRow([name]);
+      st.dataV++;
+    });
+  },
+
+  scoresVisible(b) { return mutate_(st => { st.scoresHidden = !b.on; st.dataV++; }); },
+
+  // --- Кнопка «Кто первый» ---
+  buzzerStart(b) {
+    return mutate_(st => {
+      const now = Date.now();
+      st.buzzer = {
+        id: now, on: true, discipline: str_(b.discipline) || BUZZER_DISCIPLINE,
+        points: Number(b.points) || 0,
+        // Общий момент старта через 3 с: за это время раунд дойдёт до всех планшетов.
+        startAt: now + 3000,
+        presses: {}, firstAt: 0, winner: null, done: false,
+      };
+      st.alarm.on = false;
+    });
+  },
+
+  buzzerFinalize() { return mutate_(st => { buzzerFinalize_(st); }); },
+
+  buzzerClose() { return mutate_(st => { st.buzzer.on = false; }); },
 
   // --- Факты ---
   factAdd(b) {
