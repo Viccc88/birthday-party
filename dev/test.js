@@ -274,6 +274,11 @@ check('теперь точный ответ один лучший', adminData().
 section('Своя игра, план, сброс, правки таблицы');
 admin({ a: 'setLink', url: 'https://sigame.example/lobby/1' });
 check('ссылка сохранена', state().sigame === 'https://sigame.example/lobby/1');
+admin({ a: 'setSplash', title: 'Через 5 минут — Своя игра!', sub: '', emoji: '🎯' });
+admin({ a: 'setScreen', screen: 'splash' });
+check('заставка с текстом пульта', state().screen === 'splash' && state().splash.title === 'Через 5 минут — Своя игра!' && state().splash.emoji === '🎯');
+admin({ a: 'setSplash', title: '', sub: 'x', emoji: '' });
+check('пустой заголовок заставки — по умолчанию', state().splash.title === 'С днём рождения!' && state().splash.emoji === '');
 const dv = state().dataV;
 ctx.onEdit({ range: { getSheet: () => ({ getName: () => 'План' }) } });
 check('ручная правка таблицы обновляет данные', state().dataV === dv + 1);
@@ -285,6 +290,10 @@ st = state();
 check('сброс состояния: счётчики не уменьшаются', st.v > vBefore && st.dataV > dv + 1 && st.screen === 'plan' && !st.buzzer.on);
 ctx.loadIqQuestions();
 check('загрузка вопросов IQ', data().iq.questions.length === 15 && data().iq.minutes === 10);
+const cache = ctx.CacheService.getScriptCache();
+cache.put('state', JSON.stringify({ v: 999, dataV: 999, screen: 'plan', facts: { order: [], opened: {}, taken: [] } }), 600);
+st = state();
+check('состояние от старой версии дополняется (кнопка тревоги не пропадает)', st.buzzer && st.buzzer.on === false && st.challenge && st.challenge.id === 0);
 
 // ---------------------------------------------------------------
 console.log('');

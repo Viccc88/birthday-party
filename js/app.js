@@ -28,6 +28,7 @@ const SCREEN_TITLES = {
   results: 'Результаты',
   sigame: 'Своя игра',
   scores: 'Таблица баллов',
+  splash: 'Заставка',
 };
 const GAME_TITLES = { iq: 'IQ-тест' };
 
@@ -206,7 +207,8 @@ function setOnline(v) {
 
 function onState(st) {
   if (!st) return;
-  if (app.state && st.v < app.state.v) return;
+  // Чуть более старая версия — запоздавший ответ, пропускаем. Резкий откат — состояние на сервере сбросили, принимаем.
+  if (app.state && st.v < app.state.v && app.state.v - st.v < 50) return;
   const prev = app.state;
   app.state = st;
   // Обычно данные уже пришли вместе с опросом; отдельный запрос — после своих действий и раз в 30 с.
@@ -268,17 +270,23 @@ async function act(a, extra = {}) {
 
 function render() {
   const root = $('#app');
+  // Каркас рисуется заново — экран внутри тоже нужно нарисовать заново.
   app.viewKey = '';
+  app.lastHtml = '';
+  app.scene = '';
   if (!API) { root.innerHTML = viewNoApi(); return; }
   if (!app.role) { root.innerHTML = viewLogin(); if (!app.data) loadData(); return; }
-  if (!app.started) { root.innerHTML = viewStart(); return; }
+  if (!app.started) { root.innerHTML = viewStart(); if (!app.data) loadData(); return; }
   root.innerHTML = isAdmin() ? shellAdmin() : shellGuest();
   renderView(true);
+  renderBuzzer();
 }
 
 function renderView(force) {
-  if (!app.started || !app.role) {
+  if (!app.started || !app.role || !$('#main')) {
     if (!app.role && app.data && $('#login-teams')) $('#app').innerHTML = viewLogin();
+    const names = $('.splash-names');
+    if (names && !names.textContent) names.textContent = birthdayNames();
     return;
   }
   const st = app.state ? Object.assign({}, app.state, { v: 0 }) : null;
@@ -293,12 +301,26 @@ function renderView(force) {
     html = `<section class="card narrow center"><div class="big-emoji">⚠️</div><h2>Не удалось показать этот экран</h2>
       <p class="muted">${esc(e.message)}</p><button class="btn" onclick="location.reload()">Обновить страницу</button></section>`;
   }
-  paint($('#main'), html);
+  const main = $('#main');
+  const scene = sceneKey();
+  const entering = scene !== app.scene;
+  app.scene = scene;
+  if (entering) app.sceneSeq = (app.sceneSeq || 0) + 1;
+  // Разметка не изменилась — не трогаем экран, иначе анимации начнутся заново.
+  const same = !entering && html === app.lastHtml;
+  app.lastHtml = html;
+  if (!same) {
+    paint(main, html);
+    if (main) {
+      main.classList.remove('enter');
+      if (entering) { void main.offsetWidth; main.classList.add('enter'); }
+    }
+  }
   const hdr = $('#hdr-now');
   if (hdr) hdr.innerHTML = headerNow();
   document.querySelectorAll('[data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === app.tab));
   document.querySelectorAll('[data-atab]').forEach(b => b.classList.toggle('on', b.dataset.atab === app.adminTab));
-  afterPaint();
+  if (!same) afterPaint();
 }
 
 // Перерисовка без потери набранного текста и фокуса.
@@ -321,7 +343,71 @@ function paint(main, html) {
   window.scrollTo(0, y);
 }
 
+// Что сейчас на экране: при смене — проигрываем анимацию появления.
+function sceneKey() {
+  const st = app.state || {};
+  const ch = st.challenge || {};
+  return [isAdmin() ? app.adminTab : app.tab, st.screen, ch.id, ch.phase, st.facts && st.facts.current, !!app.data, !!app.admin,
+    st.screen === 'splash' && !isAdmin() ? JSON.stringify(st.splash) : ''].join('|');
+}
+
+function reducedMotion() { return window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches; }
+
+// Салют (canvas-confetti). Каждое событие празднуется один раз.
+const celebrated = new Set();
+function celebrate(kind, onceKey) {
+  if (onceKey) { if (celebrated.has(onceKey)) return; celebrated.add(onceKey); }
+  if (!window.confetti || reducedMotion()) return;
+  const colors = ['#ffcc33', '#ff4d8d', '#7b5cff', '#36d67f', '#5aa9ff', '#ffffff'];
+  if (kind === 'big') {
+    confetti({ particleCount: 140, spread: 100, origin: { y: 0.6 }, colors });
+    setTimeout(() => {
+      confetti({ particleCount: 70, angle: 60, spread: 60, origin: { x: 0, y: 0.75 }, colors });
+      confetti({ particleCount: 70, angle: 120, spread: 60, origin: { x: 1, y: 0.75 }, colors });
+    }, 250);
+  } else {
+    confetti({ particleCount: 60, spread: 70, startVelocity: 35, origin: { y: 0.7 }, colors });
+  }
+}
+
+// Плавный счёт чисел (баллы) при появлении экрана.
+function countUp() {
+  if (reducedMotion()) return;
+  document.querySelectorAll('.enter [data-count]').forEach(el => {
+    const target = Number(el.dataset.count) || 0;
+    const t0 = performance.now();
+    const step = t => {
+      const k = Math.min(1, (t - t0) / 900);
+      el.textContent = fmtPts(target * (1 - Math.pow(1 - k, 3)));
+      if (k < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
+}
+
+// Поводы для салюта на планшетах.
+function celebrateMoments() {
+  if (!app.data || !app.state || isAdmin()) return;
+  const team = myTeam();
+  const st = app.state;
+  const ch = app.data.challenge;
+  if (st.screen === 'challenge' && ch && ch.phase === 'reveal' && ch.results) {
+    const mine = ch.results.find(r => r.team === team);
+    if (mine && mine.pts > 0) celebrate('big', 'ch:' + ch.id + ':' + ch.startedAt);
+    else if (!team) celebrate('small', 'ch:' + ch.id + ':' + ch.startedAt);
+  }
+  const f = st.facts;
+  if (st.screen === 'facts' && f && f.current && f.reveal && f.opened[f.current] && f.opened[f.current].ok === true) {
+    celebrate('big', 'fact:' + f.current);
+  }
+  const done = team && (app.data.iqDone || {})[team];
+  if (st.screen === 'iq' && done) celebrate('big', 'iq:' + team + ':' + done.score);
+  if (st.screen === 'scores' || app.tab === 'scores') celebrate('small', 'scores:' + app.sceneSeq);
+}
+
 function afterPaint() {
+  countUp();
+  celebrateMoments();
   const qr = $('#qr');
   if (qr && window.QRCode && qr.dataset.url) {
     qr.innerHTML = '';
@@ -358,13 +444,47 @@ function viewLogin() {
   </div></div>`;
 }
 
+const FLOATERS = ['🎈', '🎉', '✨', '🎁', '🥳', '🎊', '🎂', '⭐'];
+
+function birthdayNames() {
+  const t = app.data && app.data.teams.find(x => x.birthday);
+  return t ? t.members.map(m => m.name).join(' & ') : '';
+}
+
+// Буквы заголовка падают по очереди (--i задаёт задержку).
+function splitLetters(text) {
+  let i = 0;
+  return text.split(' ').map(word => `<span class="word">${[...word].map(ch => `<span class="ltr" style="--i:${i++}">${esc(ch)}</span>`).join('')}</span>`).join(' ');
+}
+
+function splashBackdrop() {
+  const floaters = Array.from({ length: 18 }, (_, i) =>
+    `<span style="--x:${(i * 53) % 100}%;--d:${7 + (i * 7) % 6}s;--delay:-${(i * 1.3) % 8}s;--s:${0.8 + (i % 4) * 0.25}">${FLOATERS[i % FLOATERS.length]}</span>`).join('');
+  return `<div class="splash-floaters" aria-hidden="true">${floaters}</div><div class="splash-ring" aria-hidden="true"></div>`;
+}
+
+// Заставка, которую именинники запускают на планшетах (текст — с пульта).
+function viewSplash() {
+  const sp = app.state.splash || {};
+  const sub = sp.sub || birthdayNames();
+  return `<div class="splash splash-show">
+    ${splashBackdrop()}
+    ${sp.emoji ? `<div class="splash-cake">${esc(sp.emoji)}</div>` : ''}
+    <h1 class="splash-title">${splitLetters(sp.title || 'С днём рождения!')}</h1>
+    ${sub ? `<div class="splash-names">${esc(sub)}</div>` : ''}
+  </div>`;
+}
+
 function viewStart() {
   const who = isAdmin() ? 'Пульт именинников' : app.role.type === 'team' ? app.role.team : 'Экран';
-  return `<div class="center-page start" data-act="start">
-    <div class="big-emoji">🎉</div>
-    <h1>${esc(who)}</h1>
-    <p>Нажмите в любом месте, чтобы начать</p>
-    <p class="muted small">Это включит звук уведомлений и не даст экрану погаснуть</p>
+  return `<div class="splash" data-act="start">
+    ${splashBackdrop()}
+    <div class="splash-cake">🎂</div>
+    <h1 class="splash-title">${splitLetters('С днём рождения!')}</h1>
+    <div class="splash-names">${esc(birthdayNames())}</div>
+    <div class="splash-who">${esc(who)}</div>
+    <div class="splash-tap">Нажмите, чтобы начать</div>
+    <p class="muted small splash-note">Включит звук тревоги и не даст экрану погаснуть</p>
   </div>`;
 }
 
@@ -397,6 +517,7 @@ function viewGuest() {
     case 'results': return viewResults();
     case 'sigame': return viewSigame();
     case 'scores': return viewScores(app.data.scores);
+    case 'splash': return viewSplash();
     default: return viewWelcome();
   }
 }
@@ -485,7 +606,7 @@ function viewIq() {
     return `<section class="card narrow center">
       <div class="big-emoji">🧠</div>
       <div class="muted">${esc(team)} прошла тест</div>
-      <div class="score-big">${done.score} <span>из ${done.max}</span></div>
+      <div class="score-big"><span class="n" data-count="${done.score}">${done.score}</span> <span>из ${done.max}</span></div>
       <div class="iq-num">IQ группы ≈ ${iqNumber(done.score, done.max)}</div>
       <p class="muted small">Рейтинг групп покажут именинники</p>
     </section>`;
@@ -734,7 +855,7 @@ function viewScores(sc) {
       <ol class="rating">${order.map((i, k) => `<li class="${myTeam() === sc.teams[i] ? 'mine' : ''}">
         <span class="place">${MEDALS[k] || k + 1}</span>
         <span class="who"><b>${esc(sc.teams[i])}</b></span>
-        <span class="pts">${fmtPts(sc.totals[i])}</span></li>`).join('')}</ol>
+        <span class="pts" data-count="${sc.totals[i]}">${fmtPts(sc.totals[i])}</span></li>`).join('')}</ol>
     </section>
     <section class="card">
       <h2>По дисциплинам</h2>
@@ -773,7 +894,8 @@ function shellAdmin() {
         <nav class="side-nav">${ADMIN_TABS.map(([k, t]) => `<button data-atab="${k}">${t}</button>`).join('')}</nav>
       </aside>
       <main id="main" class="main admin-main"></main>
-    </div>`;
+    </div>
+    <button id="buzz-fab" class="buzz-fab" data-act="buzzerQuick" title="Запустить тревогу-кнопку"><b>🚨</b><span>ТРЕВОГА</span></button>`;
 }
 
 function viewAdmin() {
@@ -821,8 +943,10 @@ function adminControl() {
         ${screenBtn('results', '🏆 Рейтинг IQ', 'data-results="iq"')}
         ${screenBtn('sigame', '🎯 Своя игра')}
         ${screenBtn('scores', '🏆 Таблица баллов')}
+        ${screenBtn('splash', '🎬 Заставка')}
       </div>
     </section>
+    ${adminSplash()}
     <section class="card">
       <h2>Устройства</h2>
       <ul class="devices">${devs}</ul>
@@ -834,6 +958,21 @@ function adminControl() {
       ${adminPlanList(true)}
     </section>
   </div>`;
+}
+
+function adminSplash() {
+  const sp = app.state.splash || {};
+  return `<section class="card">
+      <h2>🎬 Заставка для игроков</h2>
+      <p class="muted small">Текст меняется сразу на всех планшетах. Пустой подзаголовок — имена именинников.</p>
+      <label>Заголовок</label>
+      <input id="sp-title" data-draft data-change="setSplash" value="${esc(sp.title)}" placeholder="С днём рождения!" maxlength="120" autocomplete="off">
+      <label>Подзаголовок</label>
+      <input id="sp-sub" data-draft data-change="setSplash" value="${esc(sp.sub)}" placeholder="${esc(birthdayNames() || 'например: Через 5 минут — Своя игра!')}" maxlength="200" autocomplete="off">
+      <label>Эмодзи над заголовком</label>
+      <input id="sp-emoji" data-draft data-change="setSplash" value="${esc(sp.emoji)}" placeholder="🎂" maxlength="16" autocomplete="off">
+      <div class="row">${screenBtn('splash', app.state.screen === 'splash' ? 'Заставка на планшетах' : '▶ Показать заставку на планшетах')}</div>
+    </section>`;
 }
 
 function adminScores() {
@@ -1065,7 +1204,7 @@ function renderBuzzer() {
     sound.stopSiren();
     const list = Object.keys(bz.presses).sort((a, b) => bz.presses[a] - bz.presses[b]);
     const won = bz.winner && bz.winner === team;
-    if (won) sound.fanfare();
+    if (won) { sound.fanfare(); celebrate('big'); }
     el.innerHTML = `<div class="buzz-title">${bz.winner ? (won ? 'ВЫ ПЕРВЫЕ! 🎉' : esc(bz.winner) + ' — первые!') : 'Никто не успел'}</div>
       ${bz.winner && bz.points ? `<div class="buzz-sub">+${bz.points} в «${esc(bz.discipline)}»</div>` : ''}
       <ol class="buzz-list">${list.map((t, i) => `<li class="${t === team ? 'mine' : ''}">${MEDALS[i] || i + 1} ${esc(t)} <span>${secFmt(bz.presses[t])}</span></li>`).join('')}</ol>
@@ -1095,10 +1234,26 @@ async function buzzPress(e) {
 }
 
 let finalizing = 0;
+function buzzSettings() {
+  const rows = (app.admin && app.admin.scores && app.admin.scores.rows) || [];
+  const saved = store.get('bzDisc', '');
+  const disc = drafts['bz-disc'] || (rows.some(r => r.name === saved) ? saved : (rows.find(r => /Кто первый/.test(r.name)) || rows[0] || { name: 'Кнопка «Кто первый»' }).name);
+  const pts = Number(drafts['bz-pts'] !== undefined ? drafts['bz-pts'] : store.get('bzPts', 1));
+  return { rows, disc, pts: isNaN(pts) ? 1 : pts };
+}
+
 function renderBuzzAdmin() {
   const box = $('#buzz-box');
-  const bz = app.state && app.state.buzzer;
-  if (!box || !bz || !app.admin) return;
+  // Кнопка показывается всегда — даже если состояние пришло от старой версии скрипта.
+  const bz = (app.state && app.state.buzzer) || { on: false, done: false, presses: {} };
+  const fab = $('#buzz-fab');
+  if (fab) {
+    const live = bz.on && !bz.done;
+    fab.classList.toggle('live', live);
+    fab.classList.toggle('done', bz.on && bz.done);
+    fab.querySelector('span').textContent = live ? 'ИДЁТ…' : bz.on && bz.done ? (bz.winner ? '🏆 ' + bz.winner : 'ИТОГ') : 'ТРЕВОГА';
+  }
+  if (!box) return;
   const pressed = Object.keys(bz.presses).sort((a, b) => bz.presses[a] - bz.presses[b]);
   // Итог подводится сам через 3 с после первого нажатия.
   if (bz.on && !bz.done && bz.firstAt && serverNow() > bz.firstAt + 3000 && finalizing !== bz.id) {
@@ -1115,11 +1270,11 @@ function renderBuzzAdmin() {
       <div class="small">${pressed.map(t => `${esc(t)} — ${secFmt(bz.presses[t])}`).join('<br>')}</div>
       <button class="btn ghost" data-act="buzzerClose">Закрыть на планшетах</button>`;
   } else {
-    const rows = (app.admin.scores && app.admin.scores.rows) || [];
-    const def = drafts['bz-disc'] || (rows.find(r => /Кто первый/.test(r.name)) || rows[0] || {}).name;
-    html = `<select id="bz-disc" data-draft>${rows.map(r => `<option ${r.name === def ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
-      <div class="row"><span class="small muted">Баллов победителю:</span><input id="bz-pts" data-draft type="number" value="1" min="0" step="1"></div>
-      <button class="btn big buzz-start" data-act="buzzerStart">🚨 Тревога-кнопка</button>`;
+    const { rows, disc, pts } = buzzSettings();
+    html = `<div class="small muted">🚨 Тревога-кнопка — в дисциплину:</div>
+      <select id="bz-disc" data-draft>${(rows.length ? rows : [{ name: disc }]).map(r => `<option ${r.name === disc ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select>
+      <div class="row"><span class="small muted">Баллов победителю:</span><input id="bz-pts" data-draft type="number" value="${pts}" min="0" step="1"></div>
+      <button class="btn big buzz-start" data-act="buzzerStart">🚨 Запустить тревогу</button>`;
   }
   if (box.dataset.html !== html) { box.dataset.html = html; paint(box, html); }
 }
@@ -1134,19 +1289,38 @@ const ACTIONS = {
     try { await apiPost({ a: 'login', pin }); setRole({ type: 'admin', pin }); } catch (e) { toast(e.message, 'err'); }
   },
   start() {
+    if (app.started) return;
     sound.unlock();
     keepAwake();
     try { if (!isAdmin() && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); } catch (e) {}
     app.started = true;
-    render();
+    sound.chime();
+    celebrate('small');
+    const splash = $('.splash');
+    if (splash) splash.classList.add('leaving');
     poll();
+    setTimeout(render, splash && !reducedMotion() ? 450 : 0);
   },
   logout() {
     if (!isAdmin() && !confirm('Сменить устройство? (Команда / экран / пульт)')) return;
     logout();
   },
   buzzSeen() { store.set('buzzSeen', app.state.buzzer.id); renderBuzzer(); },
-  buzzerStart() { act('buzzerStart', { discipline: $('#bz-disc').value, points: Number($('#bz-pts').value) || 0 }); },
+  buzzerStart() {
+    const { disc, pts } = buzzSettings();
+    const discipline = ($('#bz-disc') || {}).value || disc;
+    const points = $('#bz-pts') ? Number($('#bz-pts').value) || 0 : pts;
+    store.set('bzDisc', discipline);
+    store.set('bzPts', points);
+    act('buzzerStart', { discipline, points });
+  },
+  // Плавающая кнопка: запуск с последними настройками, во время раунда — итог/закрытие.
+  buzzerQuick() {
+    const bz = (app.state && app.state.buzzer) || {};
+    if (bz.on && !bz.done) return toast('Тревога уже идёт — итог подведётся сам');
+    if (bz.on && bz.done) return act('buzzerClose');
+    ACTIONS.buzzerStart();
+  },
   buzzerFinalize() { act('buzzerFinalize'); },
   buzzerClose() { act('buzzerClose'); },
   scoreAdd(el) { act('scoreAdd', { discipline: el.dataset.d, team: el.dataset.team, delta: Number(el.dataset.delta) }); },
@@ -1258,6 +1432,15 @@ const CHANGES = {
     await act('chSetCorrect', { id: Number(el.dataset.id), value: el.value.trim() });
     delete drafts[el.id];
     toast('Сохранено', 'ok');
+  },
+  async setSplash(el) {
+    await act('setSplash', {
+      title: ($('#sp-title') || {}).value || '',
+      sub: ($('#sp-sub') || {}).value || '',
+      emoji: ($('#sp-emoji') || {}).value || '',
+    });
+    ['sp-title', 'sp-sub', 'sp-emoji'].forEach(id => delete drafts[id]);
+    toast('Заставка обновлена', 'ok');
   },
   async setLink(el) {
     await act('setLink', { url: el.value.trim() });

@@ -23,7 +23,7 @@ const SH = {
   state: '_state',
 };
 const BIRTHDAY_TEAM = 'Именинники';
-const SCREENS = ['plan', 'facts', 'iq', 'challenge', 'results', 'sigame', 'scores'];
+const SCREENS = ['plan', 'facts', 'iq', 'challenge', 'results', 'sigame', 'scores', 'splash'];
 const BUZZER_DISCIPLINE = 'Кнопка «Кто первый»';
 // Стартовые дисциплины листа «Баллы» (строки можно менять прямо в таблице).
 const CHALLENGE_DISCIPLINE = 'Испытания';
@@ -245,13 +245,15 @@ function defaultState_() {
     challenge: { id: 0, phase: 'idle', startedAt: 0, endsAt: 0, presenter: null },
     sigame: '',
     scoresHidden: false,
+    splash: { title: 'С днём рождения!', sub: '', emoji: '🎂' },
     buzzer: { id: 0, on: false, discipline: '', points: 1, startAt: 0, presses: {}, firstAt: 0, winner: null, done: false },
   };
 }
 
 function getState_() {
+  // Дополняем значениями по умолчанию: в кэше может лежать состояние от прошлой версии скрипта.
   const hit = cache_().get('state');
-  if (hit) return JSON.parse(hit);
+  if (hit) return Object.assign(defaultState_(), JSON.parse(hit));
   let saved = null;
   const sh = ss_().getSheetByName(SH.state);
   if (sh) { try { saved = JSON.parse(sh.getRange(1, 1).getValue()); } catch (e) {} }
@@ -733,6 +735,17 @@ const ADMIN_ACTIONS = {
   },
 
   setLink(b) { return mutate_(st => { st.sigame = str_(b.url); }); },
+
+  // Текст заставки для планшетов (подзаголовок пустой — имена именинников).
+  setSplash(b) {
+    return mutate_(st => {
+      st.splash = {
+        title: str_(b.title).slice(0, 120) || 'С днём рождения!',
+        sub: str_(b.sub).slice(0, 200),
+        emoji: str_(b.emoji).slice(0, 16),
+      };
+    });
+  },
 
   refresh() { return mutate_(st => { st.dataV++; }); },
 
