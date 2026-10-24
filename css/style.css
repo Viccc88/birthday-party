@@ -578,3 +578,4 @@ body::after { background: #ff2d87; bottom: -28vmax; right: -18vmax; animation: b
 #rd-details[open] summary { color: var(--text); margin-bottom: 8px; }
 .rd-body { display: grid; gap: 8px; }
 .side-box { padding-bottom: 12px; margin-bottom: 10px; gap: 6px; }
+.iq-joke { font-weight: 800; font-size: 18px; color: var(--pink); margin: 4px auto 14px; max-width: 460px; animation: rise .6s .6s both; }

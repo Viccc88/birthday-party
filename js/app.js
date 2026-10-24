@@ -610,6 +610,7 @@ function viewIq() {
       <div class="muted">${esc(team)} прошла тест</div>
       <div class="score-big"><span class="n" data-count="${done.score}">${done.score}</span> <span>из ${done.max}</span></div>
       <div class="iq-num">IQ группы ≈ ${iqNumber(done.score, done.max)}</div>
+      <p class="iq-joke">Возможно, это больше, чем у Артёма Бреславского, но это не точно</p>
       <p class="muted small">Рейтинг групп покажут именинники</p>
     </section>`;
   }
