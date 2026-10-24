@@ -247,6 +247,8 @@ function defaultState_() {
     scoresHidden: false,
     splash: { title: 'С днём рождения!', sub: '', emoji: '🎂' },
     buzzer: { id: 0, on: false, discipline: '', points: 1, startAt: 0, presses: {}, firstAt: 0, winner: null, done: false },
+    rand: null, // открытый результат рандомайзера на экранах: { id, title, mode, candidates, result }
+    randHidden: false, // есть скрытый результат (сам результат — вне состояния, его видит только пульт)
   };
 }
 
@@ -260,6 +262,20 @@ function getState_() {
   const st = Object.assign(defaultState_(), saved || {});
   cache_().put('state', JSON.stringify(st), 21600);
   return st;
+}
+
+// Скрытый результат рандомайзера хранится отдельно от общего состояния, чтобы не попасть на планшеты.
+function getSecret_() {
+  const hit = cache_().get('secret');
+  if (hit) return JSON.parse(hit);
+  const sh = ss_().getSheetByName(SH.state);
+  try { return sh ? JSON.parse(sh.getRange(2, 1).getValue() || 'null') : null; } catch (e) { return null; }
+}
+
+function saveSecret_(v) {
+  const json = JSON.stringify(v);
+  ss_().getSheetByName(SH.state).getRange(2, 1).setValue(json);
+  cache_().put('secret', json, 21600);
 }
 
 function saveState_(st) {
@@ -561,6 +577,7 @@ function buildAdminData_() {
     iq: iqRating_(),
     challenges: readChallenges_().map(ch => Object.assign(ch, { results: chResults_(ch, chAnswers, teams) })),
     seen: seen,
+    randSecret: getSecret_(),
     scores: readScores_(),
   };
 }
@@ -692,6 +709,25 @@ const TEAM_ACTIONS = {
 
 };
 
+function finishDraw_(b, pool, result, from, to) {
+  const draw = {
+    title: str_(b.title).slice(0, 80),
+    mode: b.mode,
+    // Для барабана на планшетах: варианты (не больше 60) или границы диапазона.
+    candidates: pool.length > 60 ? shuffle_(pool).slice(0, 60) : pool,
+    from: from, to: to,
+    result: result,
+  };
+  return mutate_(st => {
+    if (b.open) {
+      st.rand = Object.assign({ id: Date.now() }, draw);
+    } else {
+      saveSecret_(draw);
+      st.randHidden = true;
+    }
+  });
+}
+
 // Баллы IQ группы каждому её участнику в лист «4 комнаты», колонка «Айкью тест».
 function writeTeamScore_(team, score) {
   const sh = ss_().getSheetByName(SH.rooms);
@@ -783,6 +819,49 @@ const ADMIN_ACTIONS = {
   buzzerFinalize() { return mutate_(st => { buzzerFinalize_(st); }); },
 
   buzzerClose() { return mutate_(st => { st.buzzer.on = false; }); },
+
+  // --- Рандомайзер ---
+  // mode: team — группа, person — участник, number — число from..to, list — свой список (через ; или с новой строки).
+  // open: true — сразу на экраны, false — скрыто, только для ведущих.
+  randDraw(b) {
+    const count = Math.max(1, Math.min(5, parseInt(b.count, 10) || 1));
+    const teams = readTeams_(readSettings_()).filter(t => !t.birthday);
+    let pool = [];
+    if (b.mode === 'team') pool = teams.map(t => t.name);
+    else if (b.mode === 'person') teams.forEach(t => t.members.forEach(m => pool.push(m.label)));
+    else if (b.mode === 'list') pool = String(b.list || '').split(/[;\n]/).map(str_).filter(Boolean);
+    else if (b.mode === 'number') {
+      let from = parseInt(b.from, 10), to = parseInt(b.to, 10);
+      if (isNaN(from) || isNaN(to)) throw new Error('Укажите числа «от» и «до»');
+      if (from > to) { const x = from; from = to; to = x; }
+      if (to - from > 100000) throw new Error('Слишком большой диапазон');
+      if (to - from + 1 < count) throw new Error('В диапазоне меньше чисел, чем нужно');
+      const picked = [];
+      while (picked.length < count) { const n = from + Math.floor(Math.random() * (to - from + 1)); if (picked.indexOf(n) < 0) picked.push(n); }
+      pool = picked.map(String);
+      return finishDraw_(b, pool, picked.map(String), from, to);
+    } else throw new Error('Неизвестный режим');
+    if (!pool.length) throw new Error('Не из чего выбирать');
+    if (pool.length < count) throw new Error('Вариантов меньше, чем нужно выбрать');
+    return finishDraw_(b, pool, shuffle_(pool).slice(0, count));
+  },
+
+  // Показать скрытый результат на экранах.
+  randReveal() {
+    return mutate_(st => {
+      const sec = getSecret_();
+      if (!sec) throw new Error('Нет скрытого результата');
+      st.rand = Object.assign({}, sec, { id: Date.now() });
+      st.randHidden = false;
+      saveSecret_(null);
+    });
+  },
+
+  randHide() { return mutate_(st => { st.rand = null; }); },
+
+  randForget() {
+    return mutate_(st => { saveSecret_(null); st.randHidden = false; });
+  },
 
   // --- Испытания ---
   chStart(b) {

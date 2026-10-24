@@ -271,6 +271,40 @@ check('ответ после повторного открытия', post({ a: '
 check('теперь точный ответ один лучший', adminData().challenges.find(c => c.id === 6).results.map(x => x.pts).join() === '0,0,0,3');
 
 // ---------------------------------------------------------------
+section('Рандомайзер');
+r = admin({ a: 'randDraw', mode: 'team', open: true, count: 1, title: 'Кто начинает?' });
+st = state();
+check('открытый: результат сразу на экранах', r.ok && st.rand && st.rand.result.length === 1 && T.includes(st.rand.result[0]) && st.rand.title === 'Кто начинает?');
+check('открытый: экран под ним не меняется', st.screen === 'challenge');
+admin({ a: 'randDraw', mode: 'person', open: true, count: 3 });
+st = state();
+check('3 разных участника', st.rand.result.length === 3 && new Set(st.rand.result).size === 3);
+admin({ a: 'randDraw', mode: 'number', open: true, from: 10, to: 1, count: 2 });
+st = state();
+check('числа в диапазоне (границы можно перепутать)', st.rand.result.every(x => +x >= 1 && +x <= 10) && st.rand.from === 1 && st.rand.to === 10);
+check('чисел меньше, чем нужно — ошибка', !admin({ a: 'randDraw', mode: 'number', open: true, from: 1, to: 2, count: 3 }).ok);
+admin({ a: 'randDraw', mode: 'list', open: true, list: 'Танец; Песня\nСтих', count: 1 });
+check('свой список через ; и новую строку', ['Танец', 'Песня', 'Стих'].includes(state().rand.result[0]) && state().rand.candidates.length === 3);
+check('пустой список — ошибка', !admin({ a: 'randDraw', mode: 'list', open: true, list: ' ; ' }).ok);
+const shownId = state().rand.id;
+admin({ a: 'randDraw', mode: 'team', open: false, count: 2, title: 'Секрет' });
+st = state();
+check('скрытый: на экранах прежний результат', st.rand.id === shownId && st.randHidden === true);
+check('скрытый: результата нет ни в состоянии, ни в данных планшетов', !JSON.stringify(st).includes('Секрет') && !JSON.stringify(data()).includes('Секрет'));
+const sec = adminData().randSecret;
+check('скрытый: пульт видит результат', sec && sec.title === 'Секрет' && sec.result.length === 2);
+admin({ a: 'randReveal' });
+st = state();
+check('показ скрытого на экранах', st.rand.title === 'Секрет' && st.rand.result.join() === sec.result.join() && st.randHidden === false && !adminData().randSecret);
+check('повторный показ без скрытого — ошибка', !admin({ a: 'randReveal' }).ok);
+admin({ a: 'randHide' });
+check('убрать с экранов', state().rand === null);
+admin({ a: 'randDraw', mode: 'team', open: false });
+admin({ a: 'randForget' });
+check('забыть скрытый', state().randHidden === false && !adminData().randSecret);
+check('рандомайзер только с PIN', !post({ a: 'randDraw', mode: 'team', open: true }).ok);
+
+// ---------------------------------------------------------------
 section('Своя игра, план, сброс, правки таблицы');
 admin({ a: 'setLink', url: 'https://sigame.example/lobby/1' });
 check('ссылка сохранена', state().sigame === 'https://sigame.example/lobby/1');

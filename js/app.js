@@ -218,6 +218,7 @@ function onState(st) {
   else if (prev && !isAdmin() && st.screen === 'challenge' &&
     (prev.challenge.phase !== st.challenge.phase || prev.challenge.presenter !== st.challenge.presenter)) sound.chime();
   renderBuzzer();
+  renderRand();
   renderView();
 }
 
@@ -247,7 +248,7 @@ async function loadAdmin() {
     const j = await apiGet({ a: 'admin', pin: app.role.pin });
     app.adminAt = Date.now();
     const raw = JSON.stringify(j.data);
-    if (raw !== app.adminRaw) { app.adminRaw = raw; app.admin = j.data; renderView(); }
+    if (raw !== app.adminRaw) { app.adminRaw = raw; app.admin = j.data; renderView(); renderRandAdmin(); renderBuzzAdmin(); }
   } catch (e) {
     if (/PIN/.test(e.message)) { toast('PIN не подходит, войдите заново', 'err'); logout(); }
   } finally { adminLoading = false; }
@@ -280,6 +281,7 @@ function render() {
   root.innerHTML = isAdmin() ? shellAdmin() : shellGuest();
   renderView(true);
   renderBuzzer();
+  renderRand();
 }
 
 function renderView(force) {
@@ -891,7 +893,9 @@ function shellAdmin() {
     <div class="admin-layout">
       <aside class="side">
         <div id="buzz-box" class="side-box"></div>
+        <div id="rand-box" class="side-box"></div>
         <nav class="side-nav">${ADMIN_TABS.map(([k, t]) => `<button data-atab="${k}">${t}</button>`).join('')}</nav>
+        <button id="splash-side" class="btn side-splash" data-act="splashToggle">🎬 Заставка</button>
       </aside>
       <main id="main" class="main admin-main"></main>
     </div>
@@ -1279,6 +1283,98 @@ function renderBuzzAdmin() {
   if (box.dataset.html !== html) { box.dataset.html = html; paint(box, html); }
 }
 
+// ===================== Рандомайзер =====================
+
+let randTimers = [];
+// Барабан поверх текущего экрана: крутится ~3 с, останавливается на результате и сам закрывается.
+function renderRand() {
+  if (isAdmin()) { renderRandAdmin(); return; }
+  const el = $('#rand');
+  const r = app.state && app.state.rand;
+  // Результат старше минуты не показываем: например, планшету, который включили позже.
+  const show = app.started && r && store.get('randSeen', 0) !== r.id && serverNow() - r.id < 60000;
+  if (!show) {
+    if (!el.hidden) { randTimers.forEach(clearTimeout); el.hidden = true; el.innerHTML = ''; el.dataset.id = ''; }
+    return;
+  }
+  if (el.dataset.id === String(r.id)) return;
+  el.dataset.id = r.id;
+  randTimers.forEach(clearTimeout);
+  randTimers = [];
+  const one = r.result.length === 1;
+  el.innerHTML = `<div class="rand-card">
+      <div class="rand-title">🎲 ${esc(r.title || 'Рандомайзер')}</div>
+      <div class="rand-slots">${r.result.map((x, i) => `<div class="rand-slot ${one ? 'big' : ''}" data-i="${i}"><span>?</span></div>`).join('')}</div>
+      <button class="btn ghost rand-close" data-act="randSeen">Закрыть</button>
+    </div>`;
+  el.hidden = false;
+  const pool = r.mode === 'number'
+    ? Array.from({ length: 30 }, () => String(r.from + Math.floor(Math.random() * (r.to - r.from + 1))))
+    : r.candidates;
+  const slots = [...el.querySelectorAll('.rand-slot')];
+  const spinMs = reducedMotion() ? 0 : 2600;
+  // Каждая ячейка крутится, замедляется и останавливается чуть позже предыдущей.
+  slots.forEach((slot, i) => {
+    const stopAt = performance.now() + spinMs + i * 600;
+    const tick = () => {
+      const left = stopAt - performance.now();
+      const span = slot.querySelector('span');
+      if (left <= 0) {
+        span.textContent = r.result[i];
+        slot.classList.add('done');
+        if (i === slots.length - 1) { sound.fanfare(); celebrate('big'); }
+        return;
+      }
+      span.textContent = pool[Math.floor(Math.random() * pool.length)];
+      slot.classList.toggle('flip');
+      randTimers.push(setTimeout(tick, Math.max(55, 420 - left / 7)));
+    };
+    tick();
+  });
+  sound.chime();
+  // Окно закрывается само — текущий экран под ним продолжает работать.
+  randTimers.push(setTimeout(() => { store.set('randSeen', r.id); renderRand(); }, spinMs + slots.length * 600 + 9000));
+}
+
+function renderRandAdmin() {
+  const box = $('#rand-box');
+  if (!box) return;
+  const st = app.state || {};
+  const sp = $('#splash-side');
+  if (sp) {
+    const on = st.screen === 'splash';
+    sp.classList.toggle('active', on);
+    sp.textContent = on ? '■ Убрать заставку' : '🎬 Заставка';
+  }
+  const sec = app.admin && app.admin.randSecret;
+  const mode = drafts['rd-mode'] || store.get('rdMode', 'team');
+  // Настройки розыгрыша свёрнуты, чтобы панель помещалась по высоте; результат виден всегда.
+  let html = `<details id="rd-details" ${store.get('rdOpen', false) ? 'open' : ''}><summary>🎲 Рандомайзер</summary><div class="rd-body">
+    <select id="rd-mode" data-draft data-change="randMode">
+      <option value="team" ${mode === 'team' ? 'selected' : ''}>Группа</option>
+      <option value="person" ${mode === 'person' ? 'selected' : ''}>Участник</option>
+      <option value="number" ${mode === 'number' ? 'selected' : ''}>Число</option>
+      <option value="list" ${mode === 'list' ? 'selected' : ''}>Свой список</option>
+    </select>
+    ${mode === 'number' ? `<div class="row rd-range"><input id="rd-from" data-draft type="number" value="1" placeholder="от"><span class="muted">—</span><input id="rd-to" data-draft type="number" value="10" placeholder="до"></div>` : ''}
+    ${mode === 'list' ? '<textarea id="rd-list" data-draft rows="3" placeholder="Варианты через ; или с новой строки"></textarea>' : ''}
+    <div class="row"><span class="small muted">Сколько:</span><input id="rd-count" data-draft type="number" value="1" min="1" max="5"></div>
+    <input id="rd-title" data-draft placeholder="Заголовок (необязательно)" autocomplete="off">
+    <div class="row rd-btns">
+      <button class="btn" data-act="randDraw" data-open="1" title="Сразу на все планшеты">🎲 Открыто</button>
+      <button class="btn ghost" data-act="randDraw" data-open="0" title="Видят только ведущие">🙈 Скрыто</button>
+    </div></div></details>`;
+  if (st.randHidden && sec) {
+    html += `<div class="rd-secret"><div class="small muted">Скрытый результат${sec.title ? ' · ' + esc(sec.title) : ''}:</div>
+      <b>${sec.result.map(esc).join(', ')}</b>
+      <div class="row"><button class="btn green" data-act="randReveal">📺 Показать всем</button><button class="icon-btn" data-act="randForget" title="Забыть">✕</button></div></div>`;
+  }
+  if (st.rand) {
+    html += `<div class="rd-shown small">На экранах: <b>${st.rand.result.map(esc).join(', ')}</b> <button class="icon-btn" data-act="randHide" title="Убрать с экранов">✕</button></div>`;
+  }
+  if (box.dataset.html !== html) { box.dataset.html = html; paint(box, html); }
+}
+
 // ===================== Обработчики =====================
 
 const ACTIONS = {
@@ -1306,6 +1402,25 @@ const ACTIONS = {
     logout();
   },
   buzzSeen() { store.set('buzzSeen', app.state.buzzer.id); renderBuzzer(); },
+  randSeen() { store.set('randSeen', app.state.rand.id); renderRand(); },
+  async randDraw(el) {
+    const v = id => (document.getElementById(id) || {}).value || '';
+    const mode = v('rd-mode') || 'team';
+    const body = { mode, open: el.dataset.open === '1', count: Number(v('rd-count')) || 1, title: v('rd-title').trim(),
+      from: v('rd-from'), to: v('rd-to'), list: v('rd-list') };
+    const j = await act('randDraw', body).catch(() => null);
+    if (j && !body.open) toast('Результат виден только на пульте', 'ok');
+  },
+  randReveal() { act('randReveal'); },
+  // Кнопка внизу меню: показать заставку / вернуть экран, который был до неё.
+  splashToggle() {
+    const st = app.state || {};
+    if (st.screen === 'splash') return act('setScreen', { screen: store.get('beforeSplash', 'plan') });
+    store.set('beforeSplash', st.screen || 'plan');
+    act('setScreen', { screen: 'splash' });
+  },
+  randHide() { act('randHide'); },
+  randForget() { act('randForget'); },
   buzzerStart() {
     const { disc, pts } = buzzSettings();
     const discipline = ($('#bz-disc') || {}).value || disc;
@@ -1418,6 +1533,7 @@ const ACTIONS = {
 };
 
 const CHANGES = {
+  async randMode(el) { store.set('rdMode', el.value); drafts['rd-mode'] = el.value; renderRandAdmin(); },
   async chSetOptions(el) {
     await act('chSetOptions', { id: Number(el.dataset.id), value: el.value.trim() });
     delete drafts[el.id];
@@ -1474,6 +1590,10 @@ document.addEventListener('change', e => {
   const fn = CHANGES[el.dataset.change];
   if (fn) fn(el).catch(() => {});
 });
+
+document.addEventListener('toggle', e => {
+  if (e.target.id === 'rd-details') store.set('rdOpen', e.target.open);
+}, true);
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.id === 'pin') ACTIONS.adminLogin();
