@@ -17,17 +17,29 @@ const SH = {
   facts: 'Факты',
   iqQ: 'IQ вопросы',
   iqR: 'IQ результаты',
-  answers: 'Ответы команд',
-  correct: 'Правильные ответы',
   scores: 'Баллы',
+  challenges: 'Испытания',
+  chAnswers: 'Ответы испытаний',
   state: '_state',
 };
 const BIRTHDAY_TEAM = 'Именинники';
-const GAMES = { items: 'Предметы', words: '4 слова' };
-const SCREENS = ['plan', 'facts', 'iq', 'items', 'words', 'results', 'sigame', 'scores'];
+const SCREENS = ['plan', 'facts', 'iq', 'challenge', 'results', 'sigame', 'scores'];
 const BUZZER_DISCIPLINE = 'Кнопка «Кто первый»';
 // Стартовые дисциплины листа «Баллы» (строки можно менять прямо в таблице).
-const DISCIPLINES_SEED = ['Знакомство по фактам', 'Мафия / бункер', 'IQ-тест', 'Своя игра', 'Ассоциации', BUZZER_DISCIPLINE];
+const CHALLENGE_DISCIPLINE = 'Испытания';
+const DISCIPLINES_SEED = ['Знакомство по фактам', 'Мафия / бункер', 'IQ-тест', CHALLENGE_DISCIPLINE, 'Своя игра', 'Ассоциации', BUZZER_DISCIPLINE];
+
+// Испытания для всех групп одновременно (лист «Испытания», правится прямо в таблице).
+// Тип: «выбор» (варианты через ;), «текст», «число» (баллы получает самый близкий ответ)
+// или «слова»: в «Вариантах» слова групп по порядку (Группа 1;Группа 2;…). Каждая группа видит
+// только своё слово и показывает его без слов — честно или обманывая. Остальные пишут, какое
+// слово на самом деле. Угадавшим — «Баллы», показывающим — «Баллы» за каждую обманутую группу.
+const CHALLENGES_SEED = [
+  [1, 'Врать или не врать', 'выбор', 'Ведущий рассказывает о предмете. Это правда или ложь?', 'Правда;Ложь', '', 1, 60, CHALLENGE_DISCIPLINE, ''],
+  [2, '4 слова', 'слова', 'Покажите своё слово без слов — честно или обманывая. Остальные: какое слово на самом деле?', 'Жираф;Пылесос;Свадьба;Космос', '', 1, 90, CHALLENGE_DISCIPLINE, ''],
+  [3, 'Кейс с деньгами', 'число', 'Сколько денег в кейсе? Баллы получит самый близкий ответ', '', '', 2, 60, CHALLENGE_DISCIPLINE, ''],
+];
+const CH_TYPES = { 'выбор': 'choice', 'текст': 'text', 'число': 'number', 'слова': 'words' };
 
 // Вопросы IQ-теста уровня 11 класса (можно править прямо в листе «IQ вопросы»).
 // Колонки: №, вопрос, варианты A–D, правильная буква, баллы.
@@ -78,6 +90,7 @@ function route_(p, b) {
     return { ok: true, state: getState_(), now: Date.now() };
   }
   if (a === 'data') return { ok: true, data: getPublicData_() };
+  if (a === 'word') return { ok: true, word: myWord_(p.team) };
   if (a === 'login') { checkPin_(b.pin || p.pin); return { ok: true }; }
   if (a === 'admin') { checkPin_(p.pin); return { ok: true, data: getAdminData_(), state: getState_() }; }
   if (TEAM_ACTIONS[a]) return TEAM_ACTIONS[a](b);
@@ -168,7 +181,7 @@ function withLock_(fn) {
 }
 
 function ensureSheets_(force) {
-  if (!force && cache_().get('ensured2')) return;
+  if (!force && cache_().get('ensured3')) return;
   const ss = ss_();
   const mk = (name, header, rows) => {
     if (ss.getSheetByName(name)) return;
@@ -179,16 +192,13 @@ function ensureSheets_(force) {
   };
   mk(SH.settings, ['Параметр', 'Значение', 'Пояснение'], [
     ['Именинники', 'Илья, Арсений', 'Через запятую. Участвуют в игре с фактами'],
-    ['Комнат: предметы', '6', 'Сколько полей «Комната N — предмет» на планшетах'],
-    ['Комнат: 4 слова', '6', 'Сколько полей для предложений'],
     ['IQ: минут на тест', String(IQ_MINUTES), '0 — без таймера'],
   ]);
   mk(SH.facts, ['№', 'Факт', 'О ком', 'Открыл', 'Угадал'], []);
   mk(SH.iqQ, ['№', 'Вопрос', 'A', 'B', 'C', 'D', 'Ответ (буква)', 'Баллы'], IQ_SEED);
   mk(SH.iqR, ['Время', 'Команда', 'Участники', 'Баллы', 'Из', 'Ответы', 'ID'], []);
-  mk(SH.answers, ['Команда', 'Игра', 'Комната', 'Ответ', 'Время', 'Проверка (+ / -)'], []);
-  mk(SH.correct, ['Комната', 'Предмет (врать или не врать)', 'Предложение (4 слова)'],
-    [1, 2, 3, 4, 5, 6].map(n => [n, '', '']));
+  mk(SH.challenges, ['№', 'Название', 'Тип (выбор / текст / число / слова)', 'Задание', 'Варианты (через ;)', 'Правильный ответ', 'Баллы', 'Секунд (0 — без таймера)', 'Дисциплина', 'Начислено'], CHALLENGES_SEED);
+  mk(SH.chAnswers, ['№ испытания', 'Команда', 'Ответ', 'Время', 'Проверка (+ / -)', 'Показывает'], []);
   if (!ss.getSheetByName(SH.state)) {
     const sh = ss.insertSheet(SH.state);
     sh.getRange(1, 1).setValue(JSON.stringify(defaultState_()));
@@ -198,7 +208,7 @@ function ensureSheets_(force) {
     const teams = readTeams_(readSettings_()).filter(t => !t.birthday).map(t => t.name);
     mk(SH.scores, ['Дисциплина'].concat(teams), DISCIPLINES_SEED.map(d => [d].concat(teams.map(() => ''))));
   }
-  cache_().put('ensured2', '1', 21600);
+  cache_().put('ensured3', '1', 21600);
 }
 
 // ===================== Состояние (общий «пульт») =====================
@@ -209,13 +219,11 @@ function defaultState_() {
     dataV: 1,
     screen: 'plan',
     results: 'iq',
-    showAnswers: false,
     planCurrent: -1,
     alarm: { on: false, msg: '', id: 0 },
     facts: { order: [], opened: {}, turn: null, current: null, reveal: false, answer: null, taken: [] },
     iq: { open: false },
-    items: { open: false },
-    words: { open: false },
+    challenge: { id: 0, phase: 'idle', startedAt: 0, endsAt: 0, presenter: null },
     sigame: '',
     scoresHidden: false,
     buzzer: { id: 0, on: false, discipline: '', points: 1, startAt: 0, presses: {}, firstAt: 0, winner: null, done: false },
@@ -260,8 +268,6 @@ function readSettings_() {
   const num = (k, d) => { const n = parseInt(map[k], 10); return isNaN(n) ? d : n; };
   return {
     birthday: (map['Именинники'] || '').split(',').map(str_).filter(Boolean),
-    itemsRooms: num('Комнат: предметы', 6),
-    wordsRooms: num('Комнат: 4 слова', 6),
     iqMinutes: num('IQ: минут на тест', 7),
   };
 }
@@ -327,26 +333,6 @@ function readIqResults_() {
   })).filter(x => x.team);
 }
 
-function readAnswers_() {
-  const gameKey = {};
-  Object.keys(GAMES).forEach(k => { gameKey[GAMES[k]] = k; });
-  return rows_(SH.answers).slice(1).filter(r => str_(r[0])).map((r, i) => ({
-    row: i + 2, team: str_(r[0]), game: gameKey[str_(r[1])] || str_(r[1]),
-    room: parseInt(r[2], 10) || 0, answer: str_(r[3]), time: str_(r[4]), check: str_(r[5]),
-  }));
-}
-
-function readCorrect_() {
-  const out = { items: {}, words: {} };
-  rows_(SH.correct).slice(1).forEach(r => {
-    const room = parseInt(r[0], 10);
-    if (!room) return;
-    out.items[room] = str_(r[1]);
-    out.words[room] = str_(r[2]);
-  });
-  return out;
-}
-
 // ===================== Проверка ответов =====================
 
 function parseCheck_(s) {
@@ -356,40 +342,114 @@ function parseCheck_(s) {
   return null;
 }
 
-// Правильных вариантов может быть несколько через «/» или «;».
-function autoCheck_(game, answer, correct) {
-  const variants = str_(correct).split(/[\/;|]/).map(norm_).filter(Boolean);
-  if (!variants.length) return null;
-  const a = norm_(answer);
-  if (!a) return false;
-  return variants.some(v => {
-    if (a === v) return true;
-    if (game !== 'items') return false;
-    return (' ' + a + ' ').indexOf(' ' + v + ' ') >= 0;
+// ===================== Испытания =====================
+
+function readChallenges_() {
+  return rows_(SH.challenges).slice(1).filter(r => str_(r[1])).map((r, i) => {
+    let awarded = {};
+    try { awarded = JSON.parse(str_(r[9]) || '{}'); } catch (e) {}
+    return {
+      row: i + 2,
+      id: parseInt(r[0], 10) || i + 1,
+      name: str_(r[1]),
+      type: CH_TYPES[norm_(r[2])] || 'text',
+      task: str_(r[3]),
+      options: str_(r[4]).split(';').map(str_).filter(Boolean),
+      correct: str_(r[5]),
+      pts: Number(String(r[6]).replace(',', '.')) || 0,
+      seconds: parseInt(r[7], 10) || 0,
+      discipline: str_(r[8]) || CHALLENGE_DISCIPLINE,
+      awarded: awarded,
+    };
   });
 }
 
-function computeGame_(game, teams, settings, answers, correct, withCorrect) {
-  const n = game === 'items' ? settings.itemsRooms : settings.wordsRooms;
-  const rows = teams.filter(t => !t.birthday).map(t => {
-    const rooms = [];
-    let score = 0;
-    for (let room = 1; room <= n; room++) {
-      const a = answers.filter(x => x.team === t.name && x.game === game && x.room === room)[0];
-      const manual = a ? parseCheck_(a.check) : null;
-      const ok = manual !== null ? manual : autoCheck_(game, a ? a.answer : '', correct[game][room]);
-      if (ok) score++;
-      rooms.push({ room: room, answer: a ? a.answer : '', ok: ok, manual: manual !== null });
-    }
-    return { team: t.name, score: score, rooms: rooms };
+function readChAnswers_() {
+  return rows_(SH.chAnswers).slice(1).filter(r => str_(r[1])).map((r, i) => ({
+    row: i + 2, id: parseInt(r[0], 10) || 0, team: str_(r[1]), answer: str_(r[2]), time: str_(r[3]), check: str_(r[4]),
+    presenter: str_(r[5]),
+  }));
+}
+
+function num_(s) {
+  const n = parseFloat(str_(s).replace(/\s/g, '').replace(',', '.'));
+  return isNaN(n) ? null : n;
+}
+
+// Результат каждой группы в испытании: ручная проверка важнее автоматической.
+// Выбор и текст — совпадение с правильным ответом (вариантов может быть несколько через «/»),
+// число — баллы у самого близкого ответа (у всех, кто одинаково близко).
+function chResults_(ch, answers, teams, presenter) {
+  if (ch.type === 'words') return wordsResults_(ch, answers, teams, presenter);
+  const mine = answers.filter(a => a.id === ch.id);
+  const variants = ch.correct.split('/').map(norm_).filter(Boolean);
+  const target = num_(ch.correct);
+  let best = null;
+  if (ch.type === 'number' && target !== null) {
+    mine.forEach(a => { const n = num_(a.answer); if (n !== null) best = best === null ? Math.abs(n - target) : Math.min(best, Math.abs(n - target)); });
+  }
+  return teams.filter(t => !t.birthday).map(t => {
+    const a = mine.filter(x => x.team === t.name)[0];
+    const answer = a ? a.answer : '';
+    const manual = a ? parseCheck_(a.check) : null;
+    let ok = null;
+    if (manual !== null) ok = manual;
+    else if (!answer) ok = ch.correct ? false : null;
+    else if (ch.type === 'number') {
+      const n = num_(answer);
+      ok = target === null ? null : n !== null && Math.abs(Math.abs(n - target) - best) < 1e-9;
+    } else if (variants.length) ok = variants.indexOf(norm_(answer)) >= 0;
+    return { team: t.name, answer: answer, ok: ok, manual: manual !== null, pts: ok ? ch.pts : 0 };
   });
-  rows.sort((x, y) => y.score - x.score);
-  const out = { rooms: n, teams: rows };
-  if (withCorrect) {
-    out.correct = [];
-    for (let room = 1; room <= n; room++) out.correct.push(correct[game][room] || '');
+}
+
+// Слово группы в испытании «слова» (по порядку групп в листе «Группы»).
+function teamWord_(ch, teams, team) {
+  const i = teams.filter(t => !t.birthday).map(t => t.name).indexOf(team);
+  return i >= 0 ? ch.options[i] || '' : '';
+}
+
+function wordsResults_(ch, answers, teams, presenter) {
+  if (!presenter) return [];
+  const word = teamWord_(ch, teams, presenter);
+  const variants = word.split('/').map(norm_).filter(Boolean);
+  const rows = teams.filter(t => !t.birthday && t.name !== presenter).map(t => {
+    const a = answers.filter(x => x.id === ch.id && x.presenter === presenter && x.team === t.name)[0];
+    const answer = a ? a.answer : '';
+    const manual = a ? parseCheck_(a.check) : null;
+    const ok = manual !== null ? manual : answer ? variants.indexOf(norm_(answer)) >= 0 : false;
+    return { team: t.name, answer: answer, ok: ok, manual: manual !== null, pts: ok ? ch.pts : 0 };
+  });
+  const fooled = rows.filter(r => r.answer && !r.ok).length;
+  rows.unshift({ team: presenter, presenter: true, answer: word, ok: null, manual: false, fooled: fooled, pts: fooled * ch.pts });
+  return rows;
+}
+
+// Текущее испытание для планшетов: без правильного ответа, пока его не показали.
+function publicChallenge_(st, teams) {
+  const cur = st.challenge;
+  if (!cur || !cur.id) return null;
+  const ch = readChallenges_().filter(c => c.id === cur.id)[0];
+  if (!ch) return null;
+  const answers = readChAnswers_();
+  const words = ch.type === 'words';
+  const out = {
+    id: ch.id, name: ch.name, type: ch.type, task: ch.task, options: words ? [] : ch.options, pts: ch.pts,
+    phase: cur.phase, endsAt: cur.endsAt, presenter: cur.presenter || null, answers: {},
+  };
+  answers.filter(a => a.id === ch.id && (!words || a.presenter === cur.presenter)).forEach(a => { out.answers[a.team] = a.answer; });
+  if (cur.phase === 'reveal') {
+    out.correct = words ? teamWord_(ch, teams, cur.presenter) : ch.correct;
+    out.results = chResults_(ch, answers, teams, cur.presenter);
   }
   return out;
+}
+
+function myWord_(team) {
+  const cur = getState_().challenge;
+  const ch = readChallenges_().filter(c => c.id === cur.id)[0];
+  if (!ch || ch.type !== 'words') return '';
+  return teamWord_(ch, readTeams_(readSettings_()), team);
 }
 
 // Результат IQ-теста каждой группы (одна попытка на группу).
@@ -409,18 +469,12 @@ function getPublicData_() {
   ensureSheets_();
   const st = getState_();
   const showResults = st.screen === 'results';
-  const key = 'data_' + st.dataV + (showResults ? '_r' + (st.showAnswers ? 'a' : '') : '');
+  const key = 'data_' + st.dataV + (showResults ? '_r' : '');
   const hit = cache_().get(key);
   if (hit) return JSON.parse(hit);
 
   const settings = readSettings_();
   const teams = readTeams_(settings);
-  const answers = readAnswers_();
-  const submitted = {};
-  answers.forEach(a => {
-    submitted[a.team] = submitted[a.team] || { items: {}, words: {} };
-    if (submitted[a.team][a.game]) submitted[a.team][a.game][a.room] = a.answer;
-  });
   const data = {
     dataV: st.dataV,
     teams: teams,
@@ -430,19 +484,11 @@ function getPublicData_() {
       minutes: settings.iqMinutes,
       questions: readIqQuestions_().map(q => ({ id: q.id, q: q.q, opts: q.opts, pts: q.pts })),
     },
-    rooms: { items: settings.itemsRooms, words: settings.wordsRooms },
-    submitted: submitted,
+    challenge: publicChallenge_(st, teams),
     iqDone: iqDone_(),
     scores: st.scoresHidden ? null : readScores_(),
   };
-  if (showResults) {
-    const correct = readCorrect_();
-    data.results = {
-      iq: iqRating_(),
-      items: computeGame_('items', teams, settings, answers, correct, st.showAnswers),
-      words: computeGame_('words', teams, settings, answers, correct, st.showAnswers),
-    };
-  }
+  if (showResults) data.results = { iq: iqRating_() };
   try { cache_().put(key, JSON.stringify(data), 20); } catch (e) {}
   return data;
 }
@@ -451,8 +497,7 @@ function getAdminData_() {
   ensureSheets_();
   const settings = readSettings_();
   const teams = readTeams_(settings);
-  const answers = readAnswers_();
-  const correct = readCorrect_();
+  const chAnswers = readChAnswers_();
   const devices = teams.filter(t => !t.birthday).map(t => t.name).concat(['Экран', 'Пульт']);
   const seenRaw = cache_().getAll(devices.map(d => 'seen_' + d));
   const seen = {};
@@ -465,8 +510,12 @@ function getAdminData_() {
     facts: readFacts_().map(f => ({ id: f.id, text: f.text, who: f.who })),
     iqQuestions: readIqQuestions_().length,
     iq: iqRating_(),
-    items: computeGame_('items', teams, settings, answers, correct, true),
-    words: computeGame_('words', teams, settings, answers, correct, true),
+    challenges: readChallenges_().map(ch => {
+      if (ch.type !== 'words') return Object.assign(ch, { results: chResults_(ch, chAnswers, teams) });
+      const rounds = {};
+      teams.filter(t => !t.birthday).forEach(t => { rounds[t.name] = wordsResults_(ch, chAnswers, teams, t.name); });
+      return Object.assign(ch, { results: [], rounds: rounds });
+    }),
     seen: seen,
     scores: readScores_(),
   };
@@ -516,6 +565,24 @@ function buzzerFinalize_(st) {
 }
 
 const TEAM_ACTIONS = {
+  // Ответ группы на текущее испытание (можно менять, пока приём открыт).
+  chAnswer(b) {
+    if (!b.team) throw new Error('Не указана команда');
+    return mutate_(st => {
+      const cur = st.challenge;
+      if (cur.id !== Number(b.id) || cur.phase !== 'answer') throw new Error('Приём ответов закрыт');
+      if (cur.endsAt && Date.now() > cur.endsAt + 5000) throw new Error('Время вышло');
+      if (cur.presenter === b.team) throw new Error('Сейчас показываете вы');
+      const sh = ss_().getSheetByName(SH.chAnswers);
+      const text = str_(b.answer);
+      const presenter = cur.presenter || '';
+      const row = readChAnswers_().filter(a => a.id === cur.id && a.team === b.team && a.presenter === presenter)[0];
+      if (row) sh.getRange(row.row, 3, 1, 3).setValues([[text, now_(), '']]);
+      else sh.appendRow([cur.id, b.team, text, now_(), '', presenter]);
+      st.dataV++;
+    });
+  },
+
   // Нажатие кнопки «Кто первый»: ms — сколько прошло от общего старта тревоги до нажатия.
   buzzerPress(b) {
     return mutate_(st => {
@@ -579,34 +646,6 @@ const TEAM_ACTIONS = {
     });
   },
 
-  // Ответы команды по комнатам: { team, game: 'items'|'words', answers: { 1: '…', 2: '…' } }
-  roomSubmit(b) {
-    const game = b.game;
-    if (!GAMES[game]) throw new Error('Неизвестная игра');
-    if (!b.team) throw new Error('Не указана команда');
-    return withLock_(() => {
-      const st = getState_();
-      if (!st[game].open) throw new Error('Приём ответов закрыт');
-      const sh = ss_().getSheetByName(SH.answers);
-      const existing = readAnswers_();
-      const time = now_();
-      Object.keys(b.answers || {}).forEach(k => {
-        const room = parseInt(k, 10);
-        const text = str_(b.answers[k]);
-        if (!room) return;
-        const row = existing.filter(x => x.team === b.team && x.game === game && x.room === room)[0];
-        if (row) {
-          if (row.answer === text) return;
-          sh.getRange(row.row, 4, 1, 3).setValues([[text, time, '']]);
-        } else if (text) {
-          sh.appendRow([b.team, GAMES[game], room, text, time, '']);
-        }
-      });
-      st.dataV++;
-      saveState_(st);
-      return { ok: true, state: st, time: time };
-    });
-  },
 };
 
 // Баллы IQ группы каждому её участнику в лист «4 комнаты», колонка «Айкью тест».
@@ -630,8 +669,6 @@ const ADMIN_ACTIONS = {
       st.screen = b.screen;
       if (b.results) st.results = b.results;
       if (b.screen === 'iq') st.iq.open = true;
-      if (b.screen === 'items') st.items.open = true;
-      if (b.screen === 'words') st.words.open = true;
       if (b.screen === 'facts' && !st.facts.order.length) st.facts.order = shuffle_(readFacts_().map(f => f.id));
     });
   },
@@ -643,7 +680,7 @@ const ADMIN_ACTIONS = {
   planCurrent(b) { return mutate_(st => { st.planCurrent = Number(b.i); }); },
 
   setOpen(b) {
-    if (['iq', 'items', 'words'].indexOf(b.game) < 0) throw new Error('Неизвестная игра');
+    if (b.game !== 'iq') throw new Error('Неизвестная игра');
     return mutate_(st => { st[b.game].open = !!b.open; });
   },
 
@@ -656,8 +693,6 @@ const ADMIN_ACTIONS = {
       st.dataV++;
     });
   },
-
-  showAnswers(b) { return mutate_(st => { st.showAnswers = !!b.on; }); },
 
   setLink(b) { return mutate_(st => { st.sigame = str_(b.url); }); },
 
@@ -698,6 +733,89 @@ const ADMIN_ACTIONS = {
   buzzerFinalize() { return mutate_(st => { buzzerFinalize_(st); }); },
 
   buzzerClose() { return mutate_(st => { st.buzzer.on = false; }); },
+
+  // --- Испытания ---
+  chStart(b) {
+    const ch = readChallenges_().filter(c => c.id === Number(b.id))[0];
+    if (!ch) throw new Error('Нет такого испытания');
+    return mutate_(st => {
+      const now = Date.now();
+      // +3 с к таймеру: столько испытание идёт до планшетов.
+      st.challenge = ch.type === 'words'
+        ? { id: ch.id, phase: 'words', startedAt: now, endsAt: 0, presenter: null }
+        : { id: ch.id, phase: 'answer', startedAt: now, endsAt: ch.seconds ? now + ch.seconds * 1000 + 3000 : 0 };
+      st.screen = 'challenge';
+      st.dataV++;
+    });
+  },
+
+  // phase: answer — приём открыт, closed — закрыт, reveal — показать правильный ответ и итог.
+  chPhase(b) {
+    if (['answer', 'closed', 'reveal'].indexOf(b.phase) < 0) throw new Error('Неизвестная фаза');
+    return mutate_(st => {
+      if (!st.challenge.id) throw new Error('Испытание не запущено');
+      if (b.phase === 'answer') st.challenge.endsAt = 0;
+      st.challenge.phase = b.phase;
+      st.dataV++;
+    });
+  },
+
+  // «Слова»: какая группа сейчас показывает своё слово — остальным открывается приём ответов.
+  chPresenter(b) {
+    return mutate_(st => {
+      const cur = st.challenge;
+      const ch = readChallenges_().filter(c => c.id === cur.id)[0];
+      if (!ch || ch.type !== 'words') throw new Error('Сейчас не «слова»');
+      cur.presenter = str_(b.team) || null;
+      cur.phase = cur.presenter ? 'answer' : 'words';
+      cur.endsAt = cur.presenter && ch.seconds ? Date.now() + ch.seconds * 1000 + 3000 : 0;
+      st.dataV++;
+    });
+  },
+
+  chSetCorrect(b) {
+    const ch = readChallenges_().filter(c => c.id === Number(b.id))[0];
+    if (!ch) throw new Error('Нет такого испытания');
+    return mutate_(st => {
+      ss_().getSheetByName(SH.challenges).getRange(ch.row, 6).setValue(str_(b.value));
+      st.dataV++;
+    });
+  },
+
+  // verdict: true / false / null (авто)
+  chVerdict(b) {
+    return mutate_(st => {
+      const sh = ss_().getSheetByName(SH.chAnswers);
+      const presenter = str_(b.presenter);
+      const row = readChAnswers_().filter(a => a.id === Number(b.id) && a.team === b.team && a.presenter === presenter)[0];
+      const mark = b.verdict === true ? '+' : b.verdict === false ? '-' : '';
+      if (row) sh.getRange(row.row, 5).setValue(mark);
+      else if (mark) sh.appendRow([Number(b.id), b.team, '', now_(), mark, presenter]);
+      st.dataV++;
+    });
+  },
+
+  // Записать баллы испытания в лист «Баллы». Повторный вызов добавляет только разницу,
+  // поэтому после исправления проверки баллы можно пересчитать.
+  chAward(b) {
+    const ch = readChallenges_().filter(c => c.id === Number(b.id))[0];
+    if (!ch) throw new Error('Нет такого испытания');
+    return mutate_(st => {
+      // В «словах» баллы считаются за раунд показывающей группы.
+      const presenter = ch.type === 'words' ? str_(b.presenter) : '';
+      if (ch.type === 'words' && !presenter) throw new Error('Не выбрана показывающая группа');
+      const results = chResults_(ch, readChAnswers_(), readTeams_(readSettings_()), presenter);
+      const awarded = ch.awarded;
+      results.forEach(r => {
+        const key = presenter ? presenter + '|' + r.team : r.team;
+        const delta = r.pts - (awarded[key] || 0);
+        if (delta) addScore_(ch.discipline, r.team, delta);
+        awarded[key] = r.pts;
+      });
+      ss_().getSheetByName(SH.challenges).getRange(ch.row, 10).setValue(JSON.stringify(awarded));
+      st.dataV++;
+    });
+  },
 
   // --- Факты ---
   factAdd(b) {
@@ -771,30 +889,5 @@ const ADMIN_ACTIONS = {
     });
   },
 
-  // --- Проверка ответов команд ---
-  setCorrect(b) {
-    if (!GAMES[b.game]) throw new Error('Неизвестная игра');
-    return mutate_(st => {
-      const sh = ss_().getSheetByName(SH.correct);
-      const room = parseInt(b.room, 10);
-      const col = b.game === 'items' ? 2 : 3;
-      const vals = sh.getDataRange().getDisplayValues();
-      let row = vals.findIndex((r, i) => i > 0 && parseInt(r[0], 10) === room);
-      if (row < 0) { sh.appendRow([room, '', '']); row = sh.getLastRow() - 1; }
-      sh.getRange(row + 1, col).setValue(str_(b.value));
-      st.dataV++;
-    });
-  },
 
-  // verdict: true / false / null (авто)
-  setVerdict(b) {
-    if (!GAMES[b.game]) throw new Error('Неизвестная игра');
-    return mutate_(st => {
-      const row = readAnswers_().filter(x => x.team === b.team && x.game === b.game && x.room === Number(b.room))[0];
-      const mark = b.verdict === true ? '+' : b.verdict === false ? '-' : '';
-      if (row) ss_().getSheetByName(SH.answers).getRange(row.row, 6).setValue(mark);
-      else if (mark) ss_().getSheetByName(SH.answers).appendRow([b.team, GAMES[b.game], Number(b.room), '', now_(), mark]);
-      st.dataV++;
-    });
-  },
 };

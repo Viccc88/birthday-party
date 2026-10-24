@@ -24,13 +24,12 @@ const SCREEN_TITLES = {
   plan: 'План / ожидание',
   facts: 'Угадай, чей факт',
   iq: 'IQ-тест',
-  items: 'Врать или не врать: предметы',
-  words: '4 слова',
+  challenge: 'Испытание',
   results: 'Результаты',
   sigame: 'Своя игра',
   scores: 'Таблица баллов',
 };
-const GAME_TITLES = { iq: 'IQ-тест', items: 'Предметы в комнатах', words: '4 слова' };
+const GAME_TITLES = { iq: 'IQ-тест' };
 
 const app = {
   role: store.get('role', null), // {type:'team', team} | {type:'screen'} | {type:'admin', pin}
@@ -210,10 +209,12 @@ function onState(st) {
   if (app.state && st.v < app.state.v) return;
   const prev = app.state;
   app.state = st;
-  const key = st.dataV + '|' + (st.screen === 'results' ? 'r' + st.showAnswers : '');
+  const key = st.dataV + '|' + (st.screen === 'results' ? 'r' : '');
   if (key !== app.dataKey || Date.now() - app.dataAt > 30000) loadData(key);
   if (isAdmin() && (!prev || prev.dataV !== st.dataV || Date.now() - app.adminAt > 10000)) loadAdmin();
   if (prev && prev.screen !== st.screen && !isAdmin()) { sound.chime(); app.tab = 'now'; }
+  else if (prev && !isAdmin() && st.screen === 'challenge' &&
+    (prev.challenge.phase !== st.challenge.phase || prev.challenge.presenter !== st.challenge.presenter)) sound.chime();
   renderAlarm();
   renderBuzzer();
   renderView();
@@ -317,6 +318,7 @@ function afterPaint() {
     new QRCode(qr, { text: qr.dataset.url, width: 220, height: 220, colorDark: '#140b24', colorLight: '#ffffff' });
   }
   iqTick();
+  chTick();
 }
 
 function viewNoApi() {
@@ -381,9 +383,8 @@ function viewGuest() {
   switch (app.state.screen) {
     case 'facts': return viewFacts(false);
     case 'iq': return viewIq();
-    case 'items': return viewRoomForm('items');
-    case 'words': return viewRoomForm('words');
-    case 'results': return viewResults(app.state.results);
+    case 'challenge': return viewChallenge();
+    case 'results': return viewResults();
     case 'sigame': return viewSigame();
     case 'scores': return viewScores(app.data.scores);
     default: return viewWelcome();
@@ -546,44 +547,12 @@ async function iqSubmit() {
   }
 }
 
-// ----- Комнаты: предметы и 4 слова -----
-
-function viewRoomForm(game) {
-  const team = myTeam();
-  const n = app.data.rooms[game];
-  const title = game === 'items' ? '🔎 Врать или не врать' : '🧩 4 слова';
-  const hint = game === 'items' ? 'Какой уникальный предмет был в каждой комнате?' : 'Составьте верное предложение для каждой комнаты';
-  if (!team) return `<section class="hero"><h1 class="hero-title">${title}</h1><p class="muted">${hint}</p></section>`;
-  const open = app.state[game].open;
-  const sub = (app.data.submitted[team] || {})[game] || {};
-  const sentAt = store.get(`sent_${team}_${game}`, '');
-  const rows = [];
-  for (let r = 1; r <= n; r++) {
-    const id = `ans-${game}-${r}`;
-    rows.push(`<label class="room-row"><span class="room-n">${r} комната —</span>
-      ${game === 'items'
-        ? `<input id="${id}" data-draft value="${esc(sub[r] || '')}" placeholder="предмет" ${open ? '' : 'disabled'} autocomplete="off">`
-        : `<textarea id="${id}" data-draft rows="2" placeholder="предложение" ${open ? '' : 'disabled'}>${esc(sub[r] || '')}</textarea>`}
-      ${sub[r] ? '<span class="sent-mark" title="Отправлено">✓</span>' : ''}</label>`);
-  }
-  return `<section class="card narrow">
-    <h1>${title}</h1>
-    <p class="muted">${hint}</p>
-    <div class="rooms">${rows.join('')}</div>
-    ${open
-      ? `<button class="btn big" data-act="roomSubmit" data-game="${game}" ${app.busy[game] ? 'disabled' : ''}>${app.busy[game] ? 'Отправляем…' : 'Отправить ответы'}</button>
-         ${sentAt ? `<p class="muted center small">✓ Отправлено в ${esc(sentAt)}. Можно исправить и отправить ещё раз, пока приём открыт.</p>` : ''}`
-      : `<p class="notice">Приём ответов закрыт</p>`}
-  </section>`;
-}
-
 // ----- Результаты -----
 
-function viewResults(which) {
+function viewResults() {
   const r = app.data.results;
   if (!r) return `<div class="loading">Считаем результаты…</div>`;
-  if (which === 'iq') return viewIqRating(r.iq);
-  return viewGameResults(which, r[which]);
+  return viewIqRating(r.iq);
 }
 
 const MEDALS = ['🥇', '🥈', '🥉'];
@@ -601,25 +570,100 @@ function viewIqRating(list, compact) {
 
 function verdictIcon(ok) { return ok === true ? '<b class="ok">✓</b>' : ok === false ? '<b class="bad">✗</b>' : '<b class="muted">?</b>'; }
 
-function viewGameResults(game, res, adminMode) {
-  if (!res) return '';
-  const head = [];
-  for (let i = 1; i <= res.rooms; i++) head.push(`<th>${i} комн.</th>`);
-  return `<section class="card wide">
-    ${adminMode ? '' : `<h1>${game === 'items' ? '🔎' : '🧩'} ${esc(GAME_TITLES[game])}</h1>`}
-    <ol class="rating">${res.teams.map((t, i) => `<li><span class="place">${t.score ? MEDALS[i] || i + 1 : i + 1}</span>
-      <span class="who"><b>${esc(t.team)}</b></span><span class="pts">${t.score}<span class="muted">/${res.rooms}</span></span></li>`).join('')}</ol>
-    <div class="table-wrap"><table class="res-table">
-      <thead><tr><th></th>${head.join('')}</tr></thead>
-      <tbody>
-        ${res.teams.map(t => `<tr><th>${esc(t.team)}</th>${t.rooms.map(c => adminMode
-          ? `<td class="vcell ${c.ok === true ? 'is-ok' : c.ok === false ? 'is-bad' : ''}" data-act="cycleVerdict" data-game="${game}" data-team="${esc(t.team)}" data-room="${c.room}" data-ok="${c.ok}" data-manual="${c.manual}">
-              ${verdictIcon(c.ok)} ${esc(c.answer) || '<span class="muted">—</span>'}${c.manual ? '<sup title="Проверено вручную">✎</sup>' : ''}</td>`
-          : `<td class="${c.ok === true ? 'is-ok' : c.ok === false ? 'is-bad' : ''}">${verdictIcon(c.ok)} ${esc(c.answer) || '<span class="muted">—</span>'}</td>`).join('')}</tr>`).join('')}
-        ${res.correct && !adminMode ? `<tr class="correct-row"><th>Правильно</th>${res.correct.map(c => `<td>${esc(c)}</td>`).join('')}</tr>` : ''}
-      </tbody>
-    </table></div>
+// ----- Испытания для всех групп -----
+
+const CH_TYPE_TITLES = { choice: 'выбор', text: 'текст', number: 'число', words: '4 слова' };
+
+// Своё секретное слово в «4 словах» приходит отдельным запросом.
+let wordLoading = 0;
+function loadMyWord(ch) {
+  const team = myTeam();
+  if (!team || ch.type !== 'words' || (app.myWord && app.myWord.id === ch.id) || wordLoading === ch.id) return;
+  wordLoading = ch.id;
+  apiGet({ a: 'word', team }).then(j => { app.myWord = { id: ch.id, word: j.word }; renderView(true); })
+    .catch(() => {}).finally(() => { wordLoading = 0; });
+}
+
+function chTimeLeft(ch) { return ch.endsAt ? Math.max(0, Math.round((ch.endsAt - 3000 - serverNow()) / 1000)) : null; }
+
+function viewChallenge() {
+  const ch = app.data.challenge;
+  if (!ch) return `<section class="hero"><h1 class="hero-title">Испытание скоро начнётся</h1><p class="muted">Ждём команду от именинников</p></section>`;
+  const team = myTeam();
+  const words = ch.type === 'words';
+  if (words) loadMyWord(ch);
+  const myWord = words && app.myWord && app.myWord.id === ch.id ? app.myWord.word : '';
+  const presenting = words && ch.presenter && ch.presenter === team;
+  const mine = team ? ch.answers[team] : '';
+  const left = chTimeLeft(ch);
+  const open = ch.phase === 'answer' && left !== 0 && !presenting;
+  const nTeams = app.data.teams.filter(t => !t.birthday).length - (words && ch.presenter ? 1 : 0);
+  let body = '';
+
+  if (ch.phase === 'reveal') {
+    body = `<div class="ch-correct">${words ? `Слово ${esc(ch.presenter)}:` : 'Правильный ответ:'} <b>${esc(ch.correct) || '—'}</b></div>
+      <ol class="rating ch-results">${ch.results.map(r => `<li class="${r.team === team ? 'mine' : ''}">
+        <span class="place">${r.presenter ? '🎭' : r.ok === true ? '✓' : r.ok === false ? '✗' : '?'}</span>
+        <span class="who"><b>${esc(r.team)}</b><span class="muted small">${r.presenter ? `показывали · обманули: ${r.fooled}` : esc(r.answer) || 'нет ответа'}</span></span>
+        <span class="pts">${r.pts ? '+' + fmtPts(r.pts) : '0'}</span></li>`).join('')}</ol>`;
+  } else if (words && ch.phase === 'words') {
+    body = `<p class="notice">Ждём, какая группа показывает первой</p>`;
+  } else if (presenting) {
+    body = `<div class="ch-present">🎭 Вы показываете!<span>Без слов — честно или обманывая</span></div>`;
+  } else if (!team) {
+    body = `<p class="notice">${ch.phase === 'answer' ? `Ответили: ${Object.keys(ch.answers).filter(t => ch.answers[t]).length} из ${nTeams}` : 'Приём ответов закрыт'}</p>`;
+  } else if (!open) {
+    body = `<p class="notice">Приём ответов закрыт</p>${mine ? `<p class="center">Ваш ответ: <b>${esc(mine)}</b></p>` : ''}`;
+  } else {
+    const id = `ch-ans-${ch.id}-${ch.presenter || ''}`;
+    const q = words ? `Какое слово у «${esc(ch.presenter)}» на самом деле?` : 'Ваш ответ';
+    if (ch.type === 'choice') {
+      body = `<div class="iq-opts">${ch.options.map((o, i) => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}"><b>${'ABCDEFGH'[i] || i + 1}</b>${esc(o)}</button>`).join('')}</div>`;
+    } else {
+      const input = ch.type === 'number'
+        ? `<input id="${id}" data-draft inputmode="decimal" value="${esc(mine)}" placeholder="число" autocomplete="off">`
+        : `<input id="${id}" data-draft value="${esc(mine)}" placeholder="${words ? 'слово' : 'ответ'}" autocomplete="off">`;
+      body = `<label>${q}</label>${input}
+        <button class="btn big" data-act="chSend" data-input="${id}" ${app.busy.ch ? 'disabled' : ''}>${app.busy.ch ? 'Отправляем…' : 'Отправить'}</button>`;
+    }
+    if (mine) body += `<p class="muted center small">✓ Ответ отправлен: <b>${esc(mine)}</b>. Можно изменить, пока приём открыт.</p>`;
+  }
+
+  return `<section class="card narrow ch">
+    <div class="iq-top"><span>🎯 Испытание${words && ch.presenter ? ` · показывает ${esc(ch.presenter)}` : ''}</span><span id="ch-timer" class="iq-timer"></span></div>
+    <h1>${esc(ch.name)}</h1>
+    ${ch.task ? `<p class="ch-task">${esc(ch.task)}</p>` : ''}
+    ${words && team ? `<div class="ch-word">Ваше слово: <b>${esc(myWord) || '…'}</b><span class="muted small">никому не говорите</span></div>` : ''}
+    ${body}
   </section>`;
+}
+
+let chInterval = null;
+function chTick() {
+  clearInterval(chInterval);
+  const ch = app.data && app.state && app.state.screen === 'challenge' && app.data.challenge;
+  if (!ch || ch.phase !== 'answer' || !ch.endsAt) return;
+  const upd = () => {
+    const left = chTimeLeft(ch);
+    const el = $('#ch-timer');
+    if (el) { el.textContent = `⏱ ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`; el.classList.toggle('low', left < 15); }
+    if (left === 0) { clearInterval(chInterval); renderView(true); }
+  };
+  upd();
+  chInterval = setInterval(upd, 1000);
+}
+
+async function chSend(answer) {
+  const ch = app.data.challenge;
+  app.busy.ch = true;
+  renderView(true);
+  try {
+    const j = await apiPost({ a: 'chAnswer', team: myTeam(), id: ch.id, answer });
+    ch.answers[myTeam()] = answer;
+    toast('Ответ отправлен ✓', 'ok');
+    onState(j.state);
+  } catch (e) { toast(e.message, 'err'); }
+  finally { app.busy.ch = false; renderView(true); }
 }
 
 // ----- Своя игра -----
@@ -670,7 +714,7 @@ function scoresTable(sc, adminMode) {
 
 const ADMIN_TABS = [
   ['control', '🎛 Пульт'], ['scores', '🏆 Баллы'], ['plan', '🗓 План'], ['facts', '🃏 Факты'], ['iq', '🧠 IQ-тест'],
-  ['items', '🔎 Предметы'], ['words', '🧩 4 слова'], ['sigame', '🎯 Своя игра'],
+  ['challenges', '🎯 Испытания'], ['sigame', '🎯 Своя игра'],
 ];
 
 function shellAdmin() {
@@ -704,8 +748,7 @@ function viewAdmin() {
     case 'plan': return nowBar + adminPlan();
     case 'facts': return nowBar + adminFacts();
     case 'iq': return nowBar + adminIq();
-    case 'items': return nowBar + adminGame('items');
-    case 'words': return nowBar + adminGame('words');
+    case 'challenges': return nowBar + adminChallenges();
     case 'sigame': return nowBar + adminSigame();
     case 'scores': return nowBar + adminScores();
     default: return nowBar + adminControl();
@@ -732,11 +775,8 @@ function adminControl() {
         ${screenBtn('plan', '🗓 План / ожидание')}
         ${screenBtn('facts', '🃏 Факты')}
         ${screenBtn('iq', '🧠 IQ-тест')}
-        ${screenBtn('items', '🔎 Предметы')}
-        ${screenBtn('words', '🧩 4 слова')}
+        ${screenBtn('challenge', '🎯 Испытание')}
         ${screenBtn('results', '🏆 Рейтинг IQ', 'data-results="iq"')}
-        ${screenBtn('results', '🏆 Итоги: предметы', 'data-results="items"')}
-        ${screenBtn('results', '🏆 Итоги: 4 слова', 'data-results="words"')}
         ${screenBtn('sigame', '🎯 Своя игра')}
         ${screenBtn('scores', '🏆 Таблица баллов')}
       </div>
@@ -756,6 +796,7 @@ function adminControl() {
 
 function adminScores() {
   const sc = app.admin.scores;
+  if (!sc) return `<div class="loading">Загрузка…</div>`;
   return `<section class="card">
       <div class="row between"><h2>🏆 Баллы групп</h2>${screenBtn('scores', app.state.screen === 'scores' ? 'Баллы на планшетах' : '▶ Показать на планшетах')}</div>
       <label class="check"><input type="checkbox" data-act="scoresVisible" ${app.state.scoresHidden ? '' : 'checked'}> гости видят баллы (вкладка «Баллы» на планшетах)</label>
@@ -873,34 +914,54 @@ function adminIq() {
   </div>`;
 }
 
-function adminGame(game) {
+function verdictIcon(ok) { return ok === true ? '<b class="ok">✓</b>' : ok === false ? '<b class="bad">✗</b>' : '<b class="muted">?</b>'; }
+
+const CH_PHASES = { answer: 'идёт приём ответов', closed: 'приём закрыт', reveal: 'ответ показан', words: 'ждём, кто показывает' };
+
+function adminChallenges() {
   const st = app.state;
-  const res = app.admin[game];
-  const correctInputs = [];
-  for (let r = 1; r <= res.rooms; r++) {
-    const id = `cor-${game}-${r}`;
-    correctInputs.push(`<label class="room-row"><span class="room-n">${r} комната</span>
-      <input id="${id}" data-draft data-change="setCorrect" data-game="${game}" data-room="${r}" value="${esc(res.correct[r - 1])}" placeholder="пока не известно" autocomplete="off"></label>`);
+  const cur = st.challenge;
+  const list = app.admin.challenges;
+  const ch = cur.id ? list.find(c => c.id === cur.id) : null;
+  const teams = app.admin.teams.filter(t => !t.birthday).map(t => t.name);
+  let current = '';
+  if (ch) {
+    const words = ch.type === 'words';
+    const results = words ? (cur.presenter ? ch.rounds[cur.presenter] || [] : []) : ch.results;
+    const awardKey = t => words ? cur.presenter + '|' + t : t;
+    const awarded = results.length && results.every(r => ch.awarded[awardKey(r.team)] === r.pts);
+    current = `<section class="card span2 ch-current">
+      <div class="row between"><h2>▶ ${esc(ch.name)}</h2><span class="pill">${esc(CH_PHASES[cur.phase] || cur.phase)}</span></div>
+      ${st.screen !== 'challenge' ? `<div class="row">${screenBtn('challenge', '▶ Вернуть испытание на планшеты')}</div>` : ''}
+      ${words ? `<div class="row">${teams.map((t, i) => `<button class="btn ${cur.presenter === t ? 'active' : 'ghost'}" data-act="chPresenter" data-team="${esc(t)}">🎭 ${esc(t)}<span class="muted small">${esc(ch.options[i] || '—')}</span></button>`).join('')}</div>
+        <p class="muted small">Выберите, какая группа показывает. Её слово — под названием. Остальным откроется приём ответов.</p>` : ''}
+      <div class="row">
+        <button class="btn ${cur.phase === 'answer' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="answer" ${words && !cur.presenter ? 'disabled' : ''}>Открыть приём</button>
+        <button class="btn ${cur.phase === 'closed' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="closed">Закрыть приём</button>
+        <button class="btn ${cur.phase === 'reveal' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="reveal" ${words && !cur.presenter ? 'disabled' : ''}>👁 Показать ответ</button>
+        <button class="btn green" data-act="chAward" data-id="${ch.id}" data-presenter="${esc(cur.presenter || '')}" ${!results.length ? 'disabled' : ''}>${awarded ? '✓ Баллы начислены' : '💰 Начислить баллы'}</button>
+      </div>
+      ${results.length ? `<table class="res-table ch-table"><thead><tr><th>Группа</th><th>Ответ</th><th>Проверка</th><th>Баллы</th></tr></thead><tbody>
+        ${results.map(r => r.presenter
+          ? `<tr><th>🎭 ${esc(r.team)}</th><td>показывали «${esc(r.answer)}»</td><td>обманули: ${r.fooled}</td><td>${fmtPts(r.pts)}</td></tr>`
+          : `<tr><th>${esc(r.team)}</th><td>${esc(r.answer) || '<span class="muted">—</span>'}</td>
+            <td class="vcell ${r.ok === true ? 'is-ok' : r.ok === false ? 'is-bad' : ''}" data-act="chVerdict" data-id="${ch.id}" data-team="${esc(r.team)}" data-presenter="${esc(cur.presenter || '')}" data-ok="${r.ok}" data-manual="${r.manual}">${verdictIcon(r.ok)}${r.manual ? ' ✎ вручную' : ' авто'}</td>
+            <td>${fmtPts(r.pts)}</td></tr>`).join('')}</tbody></table>
+        <p class="muted small">Нажмите на проверку, чтобы засчитать вручную: авто → ✓ → ✗ → авто. После исправлений нажмите «Начислить» ещё раз — добавится только разница.</p>` : ''}
+    </section>`;
   }
-  return `<div class="cards-grid">
-    <section class="card">
-      <h2>${esc(GAME_TITLES[game])}</h2>
-      <div class="row">
-        ${screenBtn(game, st.screen === game ? 'Форма на планшетах' : '▶ Показать форму на планшетах')}
-        <button class="btn ${st[game].open ? 'red' : 'green'}" data-act="setOpen" data-game="${game}" data-open="${st[game].open ? 0 : 1}">${st[game].open ? 'Закрыть приём ответов' : 'Открыть приём ответов'}</button>
-      </div>
-      <div class="row">
-        ${screenBtn('results', '🏆 Показать итоги', `data-results="${game}"`)}
-        <label class="check"><input type="checkbox" data-act="showAnswers" ${st.showAnswers ? 'checked' : ''}> показывать правильные ответы в итогах</label>
-      </div>
-      <h3>Правильные ответы</h3>
-      <p class="muted small">Сохраняются при выходе из поля. Несколько вариантов — через «/». ${game === 'items' ? 'Засчитывается, если ответ содержит правильное слово.' : 'Сравнивается без учёта регистра и знаков препинания.'}</p>
-      <div class="rooms">${correctInputs.join('')}</div>
-    </section>
+  return `<div class="cards-grid">${current}
     <section class="card span2">
-      <h2>Ответы команд</h2>
-      <p class="muted small">Нажмите на ячейку, чтобы засчитать/не засчитать вручную: авто → ✓ → ✗ → авто.</p>
-      ${viewGameResults(game, res, true)}
+      <div class="row between"><h2>🎯 Испытания</h2><button class="btn ghost" data-act="refresh">↻ Перечитать таблицу</button></div>
+      <p class="muted small">Задания, варианты, баллы и таймер — в листе «Испытания». Тип: выбор / текст / число / слова. Баллы идут в дисциплину из колонки «Дисциплина».</p>
+      <div class="ch-list">${list.map(c => `<div class="ch-item ${c.id === cur.id ? 'cur' : ''}">
+        <div class="ch-item-head"><b>${c.id}. ${esc(c.name)}</b><span class="pill">${esc(CH_TYPE_TITLES[c.type])}</span>
+          <span class="muted small">${fmtPts(c.pts)} б.${c.seconds ? ` · ${c.seconds} с` : ''}</span>
+          <button class="btn ${c.id === cur.id ? 'active' : ''}" data-act="chStart" data-id="${c.id}">${c.id === cur.id ? 'Перезапустить' : '▶ Запустить'}</button></div>
+        <div class="muted small">${esc(c.task)}${c.options.length ? ` — <b>${esc(c.options.join(' · '))}</b>` : ''}</div>
+        ${c.type === 'words' ? '' : `<label class="room-row"><span class="room-n">Правильный ответ</span>
+          <input id="cor-ch-${c.id}" data-draft data-change="chSetCorrect" data-id="${c.id}" value="${esc(c.correct)}" placeholder="${c.type === 'number' ? 'число' : c.type === 'choice' ? 'один из вариантов' : 'можно несколько через /'}" autocomplete="off"></label>`}
+      </div>`).join('')}</div>
     </section>
   </div>`;
 }
@@ -1094,24 +1155,7 @@ const ACTIONS = {
     if (!el.dataset.force && left && !confirm(`Без ответа ${left} вопр. Завершить тест?`)) return;
     iqSubmit();
   },
-  async roomSubmit(el) {
-    const game = el.dataset.game;
-    const team = myTeam();
-    const answers = {};
-    for (let r = 1; r <= app.data.rooms[game]; r++) {
-      const inp = document.getElementById(`ans-${game}-${r}`);
-      answers[r] = inp ? inp.value.trim() : '';
-    }
-    app.busy[game] = true;
-    renderView(true);
-    try {
-      const j = await apiPost({ a: 'roomSubmit', team, game, answers });
-      store.set(`sent_${team}_${game}`, j.time);
-      toast('Ответы отправлены ✓', 'ok');
-      onState(j.state);
-    } catch (e) { toast(e.message, 'err'); }
-    finally { app.busy[game] = false; renderView(true); }
-  },
+
 
   // --- пульт ---
   alarmOn() { act('alarm', { on: true, msg: ($('#alarm-msg') || {}).value || '' }); },
@@ -1121,7 +1165,6 @@ const ACTIONS = {
   refresh() { act('refresh').then(() => toast('Данные перечитаны', 'ok')); },
   iqReset(el) { if (confirm(`Удалить результат «${el.dataset.team}» и дать группе пройти тест заново?`)) act('iqReset', { team: el.dataset.team }); },
   setOpen(el) { act('setOpen', { game: el.dataset.game, open: el.dataset.open === '1' }); },
-  showAnswers(el) { act('showAnswers', { on: el.checked }); },
   factsTurn() {
     const who = $('#turn-who').value;
     if (!who) return toast('Выберите, кто открывает', 'err');
@@ -1149,18 +1192,32 @@ const ACTIONS = {
     $('#fact-text').focus();
     toast('Факт добавлен', 'ok');
   },
-  factDelete(el) { if (confirm('Удалить факт?')) act('factDelete', { id: Number(el.dataset.id) }); },
-  cycleVerdict(el) {
-    const ok = el.dataset.ok;
-    const manual = el.dataset.manual === 'true';
-    const next = !manual ? true : ok === 'true' ? false : null;
-    act('setVerdict', { game: el.dataset.game, team: el.dataset.team, room: Number(el.dataset.room), verdict: next });
+  chStart(el) {
+    const cur = app.state.challenge;
+    if (cur.id === Number(el.dataset.id) && !confirm('Перезапустить испытание? Ответы останутся, приём откроется заново.')) return;
+    act('chStart', { id: Number(el.dataset.id) });
   },
+  chPhase(el) { act('chPhase', { phase: el.dataset.phase }); },
+  chPresenter(el) { act('chPresenter', { team: el.dataset.team }); },
+  chAward(el) { act('chAward', { id: Number(el.dataset.id), presenter: el.dataset.presenter }).then(() => toast('Баллы начислены', 'ok')); },
+  chVerdict(el) {
+    const manual = el.dataset.manual === 'true';
+    const next = !manual ? true : el.dataset.ok === 'true' ? false : null;
+    act('chVerdict', { id: Number(el.dataset.id), team: el.dataset.team, presenter: el.dataset.presenter, verdict: next });
+  },
+  chChoice(el) { chSend(el.dataset.v); },
+  chSend(el) {
+    const v = (document.getElementById(el.dataset.input) || {}).value || '';
+    if (!v.trim()) return toast('Введите ответ', 'err');
+    chSend(v.trim());
+  },
+  factDelete(el) { if (confirm('Удалить факт?')) act('factDelete', { id: Number(el.dataset.id) }); },
+
 };
 
 const CHANGES = {
-  async setCorrect(el) {
-    await act('setCorrect', { game: el.dataset.game, room: Number(el.dataset.room), value: el.value.trim() });
+  async chSetCorrect(el) {
+    await act('chSetCorrect', { id: Number(el.dataset.id), value: el.value.trim() });
     delete drafts[el.id];
     toast('Сохранено', 'ok');
   },

@@ -363,3 +363,21 @@ label { display: block; color: var(--muted); font-size: 14px; margin: 10px 0 4px
 .mini { width: 30px; height: 30px; border-radius: 8px; border: 0; background: var(--card2); color: var(--text); font-size: 18px; font-weight: 800; cursor: pointer; }
 .mini:hover { background: var(--pink); }
 .total-row td, .total-row th { color: var(--gold); font-size: 18px; border-top: 2px solid var(--gold); }
+
+/* ---------- Испытания ---------- */
+.ch-task { font-size: 20px; font-weight: 600; }
+.ch-word { background: linear-gradient(135deg, #ff4d8d33, #7b5cff33); border: 2px solid var(--pink); border-radius: 16px; padding: 14px 18px; margin: 14px 0; display: flex; flex-direction: column; gap: 2px; font-size: 18px; }
+.ch-word b { font-family: var(--head); font-size: 30px; color: #fff; }
+.ch-present { text-align: center; font-family: var(--head); font-size: 30px; color: var(--gold); margin: 20px 0; display: flex; flex-direction: column; gap: 6px; }
+.ch-present span { font-family: var(--body); font-size: 17px; color: var(--muted); }
+.ch-correct { font-size: 22px; text-align: center; margin: 16px 0; }
+.ch-correct b { font-family: var(--head); color: var(--gold); }
+.ch-list { display: grid; gap: 10px; }
+.ch-item { background: var(--bg2); border-radius: 14px; padding: 12px 14px; display: grid; gap: 6px; }
+.ch-item.cur { box-shadow: inset 0 0 0 2px var(--gold); }
+.ch-item-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ch-item-head .btn { margin-left: auto; padding: 8px 14px; }
+.ch-item .room-n { min-width: 150px; font-size: 14px; }
+.ch-current .btn span { display: block; font-size: 12px; }
+.ch-current .btn { flex-direction: column; }
+.ch-table td, .ch-table th { vertical-align: middle; }
