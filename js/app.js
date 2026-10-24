@@ -593,36 +593,34 @@ function viewChallenge() {
   const words = ch.type === 'words';
   if (words) loadMyWord(ch);
   const myWord = words && app.myWord && app.myWord.id === ch.id ? app.myWord.word : '';
-  const presenting = words && ch.presenter && ch.presenter === team;
   const mine = team ? ch.answers[team] : '';
   const left = chTimeLeft(ch);
-  const open = ch.phase === 'answer' && left !== 0 && !presenting;
-  const nTeams = app.data.teams.filter(t => !t.birthday).length - (words && ch.presenter ? 1 : 0);
+  const open = ch.phase === 'answer' && left !== 0;
+  const nTeams = app.data.teams.filter(t => !t.birthday).length;
   let body = '';
 
   if (ch.phase === 'reveal') {
-    body = `<div class="ch-correct">${words ? `Слово ${esc(ch.presenter)}:` : 'Правильный ответ:'} <b>${esc(ch.correct) || '—'}</b></div>
+    body = `<div class="ch-correct">${words ? 'Правильное предложение:' : 'Правильный ответ:'} <b>${esc(ch.correct) || '—'}</b></div>
+      ${ch.words ? `<div class="ch-words">${ch.words.map(w => `<span><b>${esc(w.word)}</b>${esc(w.team)}</span>`).join('')}</div>` : ''}
       <ol class="rating ch-results">${ch.results.map(r => `<li class="${r.team === team ? 'mine' : ''}">
-        <span class="place">${r.presenter ? '🎭' : r.ok === true ? '✓' : r.ok === false ? '✗' : '?'}</span>
-        <span class="who"><b>${esc(r.team)}</b><span class="muted small">${r.presenter ? `показывали · обманули: ${r.fooled}` : esc(r.answer) || 'нет ответа'}</span></span>
+        <span class="place">${r.ok === true ? '✓' : r.ok === false ? '✗' : '?'}</span>
+        <span class="who"><b>${esc(r.team)}</b><span class="muted small">${esc(r.answer) || 'нет ответа'}</span></span>
         <span class="pts">${r.pts ? '+' + fmtPts(r.pts) : '0'}</span></li>`).join('')}</ol>`;
-  } else if (words && ch.phase === 'words') {
-    body = `<p class="notice">Ждём, какая группа показывает первой</p>`;
-  } else if (presenting) {
-    body = `<div class="ch-present">🎭 Вы показываете!<span>Без слов — честно или обманывая</span></div>`;
   } else if (!team) {
     body = `<p class="notice">${ch.phase === 'answer' ? `Ответили: ${Object.keys(ch.answers).filter(t => ch.answers[t]).length} из ${nTeams}` : 'Приём ответов закрыт'}</p>`;
   } else if (!open) {
     body = `<p class="notice">Приём ответов закрыт</p>${mine ? `<p class="center">Ваш ответ: <b>${esc(mine)}</b></p>` : ''}`;
   } else {
-    const id = `ch-ans-${ch.id}-${ch.presenter || ''}`;
-    const q = words ? `Какое слово у «${esc(ch.presenter)}» на самом деле?` : 'Ваш ответ';
+    const id = `ch-ans-${ch.id}`;
+    const q = words ? 'Итоговое предложение из всех слов' : 'Ваш ответ';
     if (ch.type === 'choice') {
       body = `<div class="iq-opts">${ch.options.map((o, i) => `<button class="opt ${mine === o ? 'on' : ''}" data-act="chChoice" data-v="${esc(o)}"><b>${'ABCDEFGH'[i] || i + 1}</b>${esc(o)}</button>`).join('')}</div>`;
     } else {
       const input = ch.type === 'number'
         ? `<input id="${id}" data-draft inputmode="decimal" value="${esc(mine)}" placeholder="число" autocomplete="off">`
-        : `<input id="${id}" data-draft value="${esc(mine)}" placeholder="${words ? 'слово' : 'ответ'}" autocomplete="off">`;
+        : words
+          ? `<textarea id="${id}" data-draft rows="2" placeholder="предложение">${esc(mine)}</textarea>`
+          : `<input id="${id}" data-draft value="${esc(mine)}" placeholder="ответ" autocomplete="off">`;
       body = `<label>${q}</label>${input}
         <button class="btn big" data-act="chSend" data-input="${id}" ${app.busy.ch ? 'disabled' : ''}>${app.busy.ch ? 'Отправляем…' : 'Отправить'}</button>`;
     }
@@ -630,10 +628,13 @@ function viewChallenge() {
   }
 
   return `<section class="card narrow ch">
-    <div class="iq-top"><span>🎯 Испытание${words && ch.presenter ? ` · показывает ${esc(ch.presenter)}` : ''}</span><span id="ch-timer" class="iq-timer"></span></div>
+    <div class="iq-top"><span>🎯 Испытание</span><span id="ch-timer" class="iq-timer"></span></div>
     <h1>${esc(ch.name)}</h1>
     ${ch.task ? `<p class="ch-task">${esc(ch.task)}</p>` : ''}
-    ${words && team ? `<div class="ch-word">Ваше слово: <b>${esc(myWord) || '…'}</b><span class="muted small">никому не говорите</span></div>` : ''}
+    ${words && team ? `<div class="ch-word">Ваше слово: <b>${esc(myWord) || '…'}</b><span class="muted small">никому не говорите — только показывайте</span></div>` : ''}
+    ${words && ch.presenter && ch.phase === 'answer' ? (ch.presenter === team
+      ? '<div class="ch-present">🎭 Ваша очередь показывать!</div>'
+      : `<div class="ch-present">🎭 Показывает: ${esc(ch.presenter)}</div>`) : ''}
     ${body}
   </section>`;
 }
@@ -916,7 +917,7 @@ function adminIq() {
 
 function verdictIcon(ok) { return ok === true ? '<b class="ok">✓</b>' : ok === false ? '<b class="bad">✗</b>' : '<b class="muted">?</b>'; }
 
-const CH_PHASES = { answer: 'идёт приём ответов', closed: 'приём закрыт', reveal: 'ответ показан', words: 'ждём, кто показывает' };
+const CH_PHASES = { answer: 'идёт приём ответов', closed: 'приём закрыт', reveal: 'ответ показан' };
 
 function adminChallenges() {
   const st = app.state;
@@ -927,25 +928,22 @@ function adminChallenges() {
   let current = '';
   if (ch) {
     const words = ch.type === 'words';
-    const results = words ? (cur.presenter ? ch.rounds[cur.presenter] || [] : []) : ch.results;
-    const awardKey = t => words ? cur.presenter + '|' + t : t;
-    const awarded = results.length && results.every(r => ch.awarded[awardKey(r.team)] === r.pts);
+    const results = ch.results;
+    const awarded = results.length && results.every(r => ch.awarded[r.team] === r.pts);
     current = `<section class="card span2 ch-current">
       <div class="row between"><h2>▶ ${esc(ch.name)}</h2><span class="pill">${esc(CH_PHASES[cur.phase] || cur.phase)}</span></div>
       ${st.screen !== 'challenge' ? `<div class="row">${screenBtn('challenge', '▶ Вернуть испытание на планшеты')}</div>` : ''}
       ${words ? `<div class="row">${teams.map((t, i) => `<button class="btn ${cur.presenter === t ? 'active' : 'ghost'}" data-act="chPresenter" data-team="${esc(t)}">🎭 ${esc(t)}<span class="muted small">${esc(ch.options[i] || '—')}</span></button>`).join('')}</div>
-        <p class="muted small">Выберите, какая группа показывает. Её слово — под названием. Остальным откроется приём ответов.</p>` : ''}
+        <p class="muted small">Кто сейчас выходит показывать (под названием — слово группы). Предложение группы пишут в любой момент, пока приём открыт.</p>` : ''}
       <div class="row">
-        <button class="btn ${cur.phase === 'answer' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="answer" ${words && !cur.presenter ? 'disabled' : ''}>Открыть приём</button>
+        <button class="btn ${cur.phase === 'answer' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="answer">Открыть приём</button>
         <button class="btn ${cur.phase === 'closed' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="closed">Закрыть приём</button>
-        <button class="btn ${cur.phase === 'reveal' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="reveal" ${words && !cur.presenter ? 'disabled' : ''}>👁 Показать ответ</button>
-        <button class="btn green" data-act="chAward" data-id="${ch.id}" data-presenter="${esc(cur.presenter || '')}" ${!results.length ? 'disabled' : ''}>${awarded ? '✓ Баллы начислены' : '💰 Начислить баллы'}</button>
+        <button class="btn ${cur.phase === 'reveal' ? 'active' : 'ghost'}" data-act="chPhase" data-phase="reveal">👁 Показать ответ</button>
+        <button class="btn green" data-act="chAward" data-id="${ch.id}" ${!results.length ? 'disabled' : ''}>${awarded ? '✓ Баллы начислены' : '💰 Начислить баллы'}</button>
       </div>
       ${results.length ? `<table class="res-table ch-table"><thead><tr><th>Группа</th><th>Ответ</th><th>Проверка</th><th>Баллы</th></tr></thead><tbody>
-        ${results.map(r => r.presenter
-          ? `<tr><th>🎭 ${esc(r.team)}</th><td>показывали «${esc(r.answer)}»</td><td>обманули: ${r.fooled}</td><td>${fmtPts(r.pts)}</td></tr>`
-          : `<tr><th>${esc(r.team)}</th><td>${esc(r.answer) || '<span class="muted">—</span>'}</td>
-            <td class="vcell ${r.ok === true ? 'is-ok' : r.ok === false ? 'is-bad' : ''}" data-act="chVerdict" data-id="${ch.id}" data-team="${esc(r.team)}" data-presenter="${esc(cur.presenter || '')}" data-ok="${r.ok}" data-manual="${r.manual}">${verdictIcon(r.ok)}${r.manual ? ' ✎ вручную' : ' авто'}</td>
+        ${results.map(r => `<tr><th>${esc(r.team)}</th><td>${esc(r.answer) || '<span class="muted">—</span>'}</td>
+            <td class="vcell ${r.ok === true ? 'is-ok' : r.ok === false ? 'is-bad' : ''}" data-act="chVerdict" data-id="${ch.id}" data-team="${esc(r.team)}" data-ok="${r.ok}" data-manual="${r.manual}">${verdictIcon(r.ok)}${r.manual ? ' ✎ вручную' : ' авто'}</td>
             <td>${fmtPts(r.pts)}</td></tr>`).join('')}</tbody></table>
         <p class="muted small">Нажмите на проверку, чтобы засчитать вручную: авто → ✓ → ✗ → авто. После исправлений нажмите «Начислить» ещё раз — добавится только разница.</p>` : ''}
     </section>`;
@@ -959,8 +957,8 @@ function adminChallenges() {
           <span class="muted small">${fmtPts(c.pts)} б.${c.seconds ? ` · ${c.seconds} с` : ''}</span>
           <button class="btn ${c.id === cur.id ? 'active' : ''}" data-act="chStart" data-id="${c.id}">${c.id === cur.id ? 'Перезапустить' : '▶ Запустить'}</button></div>
         <div class="muted small">${esc(c.task)}${c.options.length ? ` — <b>${esc(c.options.join(' · '))}</b>` : ''}</div>
-        ${c.type === 'words' ? '' : `<label class="room-row"><span class="room-n">Правильный ответ</span>
-          <input id="cor-ch-${c.id}" data-draft data-change="chSetCorrect" data-id="${c.id}" value="${esc(c.correct)}" placeholder="${c.type === 'number' ? 'число' : c.type === 'choice' ? 'один из вариантов' : 'можно несколько через /'}" autocomplete="off"></label>`}
+        <label class="room-row"><span class="room-n">${c.type === 'words' ? 'Правильное предложение' : 'Правильный ответ'}</span>
+          <input id="cor-ch-${c.id}" data-draft data-change="chSetCorrect" data-id="${c.id}" value="${esc(c.correct)}" placeholder="${c.type === 'number' ? 'число' : c.type === 'choice' ? 'один из вариантов' : 'можно несколько через /'}" autocomplete="off"></label>
       </div>`).join('')}</div>
     </section>
   </div>`;
@@ -1199,11 +1197,11 @@ const ACTIONS = {
   },
   chPhase(el) { act('chPhase', { phase: el.dataset.phase }); },
   chPresenter(el) { act('chPresenter', { team: el.dataset.team }); },
-  chAward(el) { act('chAward', { id: Number(el.dataset.id), presenter: el.dataset.presenter }).then(() => toast('Баллы начислены', 'ok')); },
+  chAward(el) { act('chAward', { id: Number(el.dataset.id) }).then(() => toast('Баллы начислены', 'ok')); },
   chVerdict(el) {
     const manual = el.dataset.manual === 'true';
     const next = !manual ? true : el.dataset.ok === 'true' ? false : null;
-    act('chVerdict', { id: Number(el.dataset.id), team: el.dataset.team, presenter: el.dataset.presenter, verdict: next });
+    act('chVerdict', { id: Number(el.dataset.id), team: el.dataset.team, verdict: next });
   },
   chChoice(el) { chSend(el.dataset.v); },
   chSend(el) {

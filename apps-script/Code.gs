@@ -31,12 +31,12 @@ const DISCIPLINES_SEED = ['Знакомство по фактам', 'Мафия 
 
 // Испытания для всех групп одновременно (лист «Испытания», правится прямо в таблице).
 // Тип: «выбор» (варианты через ;), «текст», «число» (баллы получает самый близкий ответ)
-// или «слова»: в «Вариантах» слова групп по порядку (Группа 1;Группа 2;…). Каждая группа видит
-// только своё слово и показывает его без слов — честно или обманывая. Остальные пишут, какое
-// слово на самом деле. Угадавшим — «Баллы», показывающим — «Баллы» за каждую обманутую группу.
+// или «слова» («4 слова»): в «Вариантах» слова групп по порядку (Группа 1;Группа 2;…). Каждая
+// группа видит только своё слово, группы по очереди показывают их, а в конце каждая пишет итоговое
+// предложение из всех слов. Верное предложение («Правильный ответ», варианты через /) — «Баллы».
 const CHALLENGES_SEED = [
   [1, 'Врать или не врать', 'выбор', 'Ведущий рассказывает о предмете. Это правда или ложь?', 'Правда;Ложь', '', 1, 60, CHALLENGE_DISCIPLINE, ''],
-  [2, '4 слова', 'слова', 'Покажите своё слово без слов — честно или обманывая. Остальные: какое слово на самом деле?', 'Жираф;Пылесос;Свадьба;Космос', '', 1, 90, CHALLENGE_DISCIPLINE, ''],
+  [2, '4 слова', 'слова', 'У каждой группы своё слово. Группы по очереди показывают их, а в конце пишут итоговое предложение из всех слов', 'Жираф;Пылесос;Свадьба;Космос', '', 1, 0, CHALLENGE_DISCIPLINE, ''],
   [3, 'Кейс с деньгами', 'число', 'Сколько денег в кейсе? Баллы получит самый близкий ответ', '', '', 2, 60, CHALLENGE_DISCIPLINE, ''],
 ];
 const CH_TYPES = { 'выбор': 'choice', 'текст': 'text', 'число': 'number', 'слова': 'words' };
@@ -198,7 +198,7 @@ function ensureSheets_(force) {
   mk(SH.iqQ, ['№', 'Вопрос', 'A', 'B', 'C', 'D', 'Ответ (буква)', 'Баллы'], IQ_SEED);
   mk(SH.iqR, ['Время', 'Команда', 'Участники', 'Баллы', 'Из', 'Ответы', 'ID'], []);
   mk(SH.challenges, ['№', 'Название', 'Тип (выбор / текст / число / слова)', 'Задание', 'Варианты (через ;)', 'Правильный ответ', 'Баллы', 'Секунд (0 — без таймера)', 'Дисциплина', 'Начислено'], CHALLENGES_SEED);
-  mk(SH.chAnswers, ['№ испытания', 'Команда', 'Ответ', 'Время', 'Проверка (+ / -)', 'Показывает'], []);
+  mk(SH.chAnswers, ['№ испытания', 'Команда', 'Ответ', 'Время', 'Проверка (+ / -)'], []);
   if (!ss.getSheetByName(SH.state)) {
     const sh = ss.insertSheet(SH.state);
     sh.getRange(1, 1).setValue(JSON.stringify(defaultState_()));
@@ -367,7 +367,6 @@ function readChallenges_() {
 function readChAnswers_() {
   return rows_(SH.chAnswers).slice(1).filter(r => str_(r[1])).map((r, i) => ({
     row: i + 2, id: parseInt(r[0], 10) || 0, team: str_(r[1]), answer: str_(r[2]), time: str_(r[3]), check: str_(r[4]),
-    presenter: str_(r[5]),
   }));
 }
 
@@ -379,8 +378,7 @@ function num_(s) {
 // Результат каждой группы в испытании: ручная проверка важнее автоматической.
 // Выбор и текст — совпадение с правильным ответом (вариантов может быть несколько через «/»),
 // число — баллы у самого близкого ответа (у всех, кто одинаково близко).
-function chResults_(ch, answers, teams, presenter) {
-  if (ch.type === 'words') return wordsResults_(ch, answers, teams, presenter);
+function chResults_(ch, answers, teams) {
   const mine = answers.filter(a => a.id === ch.id);
   const variants = ch.correct.split('/').map(norm_).filter(Boolean);
   const target = num_(ch.correct);
@@ -409,22 +407,6 @@ function teamWord_(ch, teams, team) {
   return i >= 0 ? ch.options[i] || '' : '';
 }
 
-function wordsResults_(ch, answers, teams, presenter) {
-  if (!presenter) return [];
-  const word = teamWord_(ch, teams, presenter);
-  const variants = word.split('/').map(norm_).filter(Boolean);
-  const rows = teams.filter(t => !t.birthday && t.name !== presenter).map(t => {
-    const a = answers.filter(x => x.id === ch.id && x.presenter === presenter && x.team === t.name)[0];
-    const answer = a ? a.answer : '';
-    const manual = a ? parseCheck_(a.check) : null;
-    const ok = manual !== null ? manual : answer ? variants.indexOf(norm_(answer)) >= 0 : false;
-    return { team: t.name, answer: answer, ok: ok, manual: manual !== null, pts: ok ? ch.pts : 0 };
-  });
-  const fooled = rows.filter(r => r.answer && !r.ok).length;
-  rows.unshift({ team: presenter, presenter: true, answer: word, ok: null, manual: false, fooled: fooled, pts: fooled * ch.pts });
-  return rows;
-}
-
 // Текущее испытание для планшетов: без правильного ответа, пока его не показали.
 function publicChallenge_(st, teams) {
   const cur = st.challenge;
@@ -437,10 +419,11 @@ function publicChallenge_(st, teams) {
     id: ch.id, name: ch.name, type: ch.type, task: ch.task, options: words ? [] : ch.options, pts: ch.pts,
     phase: cur.phase, endsAt: cur.endsAt, presenter: cur.presenter || null, answers: {},
   };
-  answers.filter(a => a.id === ch.id && (!words || a.presenter === cur.presenter)).forEach(a => { out.answers[a.team] = a.answer; });
+  answers.filter(a => a.id === ch.id).forEach(a => { out.answers[a.team] = a.answer; });
   if (cur.phase === 'reveal') {
-    out.correct = words ? teamWord_(ch, teams, cur.presenter) : ch.correct;
-    out.results = chResults_(ch, answers, teams, cur.presenter);
+    out.correct = ch.correct;
+    out.results = chResults_(ch, answers, teams);
+    if (words) out.words = teams.filter(t => !t.birthday).map(t => ({ team: t.name, word: teamWord_(ch, teams, t.name) }));
   }
   return out;
 }
@@ -510,12 +493,7 @@ function getAdminData_() {
     facts: readFacts_().map(f => ({ id: f.id, text: f.text, who: f.who })),
     iqQuestions: readIqQuestions_().length,
     iq: iqRating_(),
-    challenges: readChallenges_().map(ch => {
-      if (ch.type !== 'words') return Object.assign(ch, { results: chResults_(ch, chAnswers, teams) });
-      const rounds = {};
-      teams.filter(t => !t.birthday).forEach(t => { rounds[t.name] = wordsResults_(ch, chAnswers, teams, t.name); });
-      return Object.assign(ch, { results: [], rounds: rounds });
-    }),
+    challenges: readChallenges_().map(ch => Object.assign(ch, { results: chResults_(ch, chAnswers, teams) })),
     seen: seen,
     scores: readScores_(),
   };
@@ -572,13 +550,11 @@ const TEAM_ACTIONS = {
       const cur = st.challenge;
       if (cur.id !== Number(b.id) || cur.phase !== 'answer') throw new Error('Приём ответов закрыт');
       if (cur.endsAt && Date.now() > cur.endsAt + 5000) throw new Error('Время вышло');
-      if (cur.presenter === b.team) throw new Error('Сейчас показываете вы');
       const sh = ss_().getSheetByName(SH.chAnswers);
       const text = str_(b.answer);
-      const presenter = cur.presenter || '';
-      const row = readChAnswers_().filter(a => a.id === cur.id && a.team === b.team && a.presenter === presenter)[0];
+      const row = readChAnswers_().filter(a => a.id === cur.id && a.team === b.team)[0];
       if (row) sh.getRange(row.row, 3, 1, 3).setValues([[text, now_(), '']]);
-      else sh.appendRow([cur.id, b.team, text, now_(), '', presenter]);
+      else sh.appendRow([cur.id, b.team, text, now_(), '']);
       st.dataV++;
     });
   },
@@ -741,9 +717,7 @@ const ADMIN_ACTIONS = {
     return mutate_(st => {
       const now = Date.now();
       // +3 с к таймеру: столько испытание идёт до планшетов.
-      st.challenge = ch.type === 'words'
-        ? { id: ch.id, phase: 'words', startedAt: now, endsAt: 0, presenter: null }
-        : { id: ch.id, phase: 'answer', startedAt: now, endsAt: ch.seconds ? now + ch.seconds * 1000 + 3000 : 0 };
+      st.challenge = { id: ch.id, phase: 'answer', startedAt: now, endsAt: ch.seconds ? now + ch.seconds * 1000 + 3000 : 0, presenter: null };
       st.screen = 'challenge';
       st.dataV++;
     });
@@ -760,15 +734,10 @@ const ADMIN_ACTIONS = {
     });
   },
 
-  // «Слова»: какая группа сейчас показывает своё слово — остальным открывается приём ответов.
+  // «4 слова»: какая группа сейчас выходит показывать своё слово (просто подпись на планшетах).
   chPresenter(b) {
     return mutate_(st => {
-      const cur = st.challenge;
-      const ch = readChallenges_().filter(c => c.id === cur.id)[0];
-      if (!ch || ch.type !== 'words') throw new Error('Сейчас не «слова»');
-      cur.presenter = str_(b.team) || null;
-      cur.phase = cur.presenter ? 'answer' : 'words';
-      cur.endsAt = cur.presenter && ch.seconds ? Date.now() + ch.seconds * 1000 + 3000 : 0;
+      st.challenge.presenter = str_(b.team) || null;
       st.dataV++;
     });
   },
@@ -786,11 +755,10 @@ const ADMIN_ACTIONS = {
   chVerdict(b) {
     return mutate_(st => {
       const sh = ss_().getSheetByName(SH.chAnswers);
-      const presenter = str_(b.presenter);
-      const row = readChAnswers_().filter(a => a.id === Number(b.id) && a.team === b.team && a.presenter === presenter)[0];
+      const row = readChAnswers_().filter(a => a.id === Number(b.id) && a.team === b.team)[0];
       const mark = b.verdict === true ? '+' : b.verdict === false ? '-' : '';
       if (row) sh.getRange(row.row, 5).setValue(mark);
-      else if (mark) sh.appendRow([Number(b.id), b.team, '', now_(), mark, presenter]);
+      else if (mark) sh.appendRow([Number(b.id), b.team, '', now_(), mark]);
       st.dataV++;
     });
   },
@@ -801,16 +769,12 @@ const ADMIN_ACTIONS = {
     const ch = readChallenges_().filter(c => c.id === Number(b.id))[0];
     if (!ch) throw new Error('Нет такого испытания');
     return mutate_(st => {
-      // В «словах» баллы считаются за раунд показывающей группы.
-      const presenter = ch.type === 'words' ? str_(b.presenter) : '';
-      if (ch.type === 'words' && !presenter) throw new Error('Не выбрана показывающая группа');
-      const results = chResults_(ch, readChAnswers_(), readTeams_(readSettings_()), presenter);
+      const results = chResults_(ch, readChAnswers_(), readTeams_(readSettings_()));
       const awarded = ch.awarded;
       results.forEach(r => {
-        const key = presenter ? presenter + '|' + r.team : r.team;
-        const delta = r.pts - (awarded[key] || 0);
+        const delta = r.pts - (awarded[r.team] || 0);
         if (delta) addScore_(ch.discipline, r.team, delta);
-        awarded[key] = r.pts;
+        awarded[r.team] = r.pts;
       });
       ss_().getSheetByName(SH.challenges).getRange(ch.row, 10).setValue(JSON.stringify(awarded));
       st.dataV++;
