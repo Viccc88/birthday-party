@@ -225,7 +225,6 @@ function defaultState_() {
     screen: 'plan',
     results: 'iq',
     planCurrent: -1,
-    alarm: { on: false, msg: '', id: 0 },
     facts: { order: [], opened: {}, turn: null, current: null, reveal: false, answer: null, taken: [] },
     iq: { open: false },
     challenge: { id: 0, phase: 'idle', startedAt: 0, endsAt: 0, presenter: null },
@@ -689,10 +688,6 @@ const ADMIN_ACTIONS = {
     });
   },
 
-  alarm(b) {
-    return mutate_(st => { st.alarm = { on: !!b.on, msg: str_(b.msg), id: b.on ? Date.now() : st.alarm.id }; });
-  },
-
   planCurrent(b) { return mutate_(st => { st.planCurrent = Number(b.i); }); },
 
   setOpen(b) {
@@ -742,7 +737,6 @@ const ADMIN_ACTIONS = {
         startAt: now + 3000,
         presses: {}, firstAt: 0, winner: null, done: false,
       };
-      st.alarm.on = false;
     });
   },
 

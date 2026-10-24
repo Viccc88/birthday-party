@@ -215,7 +215,6 @@ function onState(st) {
   if (prev && prev.screen !== st.screen && !isAdmin()) { sound.chime(); app.tab = 'now'; }
   else if (prev && !isAdmin() && st.screen === 'challenge' &&
     (prev.challenge.phase !== st.challenge.phase || prev.challenge.presenter !== st.challenge.presenter)) sound.chime();
-  renderAlarm();
   renderBuzzer();
   renderView();
 }
@@ -269,7 +268,6 @@ function render() {
   if (!app.role) { root.innerHTML = viewLogin(); if (!app.data) loadData(); return; }
   if (!app.started) { root.innerHTML = viewStart(); return; }
   root.innerHTML = isAdmin() ? shellAdmin() : shellGuest();
-  renderAlarm();
   renderView(true);
 }
 
@@ -278,7 +276,7 @@ function renderView(force) {
     if (!app.role && app.data && $('#login-teams')) $('#app').innerHTML = viewLogin();
     return;
   }
-  const st = app.state ? Object.assign({}, app.state, { v: 0, alarm: null }) : null;
+  const st = app.state ? Object.assign({}, app.state, { v: 0 }) : null;
   const key = JSON.stringify([app.tab, app.adminTab, st, app.dataRaw, isAdmin() ? app.adminRaw : '', iqLocal()]);
   if (!force && key === app.viewKey) return;
   app.viewKey = key;
@@ -752,13 +750,7 @@ function shellAdmin() {
     </header>
     <div class="admin-layout">
       <aside class="side">
-        <div class="alarm-box">
-          <input id="alarm-msg" data-draft placeholder="Где сбор? (необязательно)" autocomplete="off">
-          <button class="btn red big" data-act="alarmOn">📢 СБОР</button>
-          <button class="btn ghost" data-act="alarmOff">Отбой</button>
-          <div id="alarm-status" class="small"></div>
-        </div>
-        <div id="buzz-box" class="alarm-box"></div>
+        <div id="buzz-box" class="side-box"></div>
         <nav class="side-nav">${ADMIN_TABS.map(([k, t]) => `<button data-atab="${k}">${t}</button>`).join('')}</nav>
       </aside>
       <main id="main" class="main admin-main"></main>
@@ -1010,29 +1002,6 @@ function adminSigame() {
   </section>`;
 }
 
-// ===================== Сбор (тревога) =====================
-
-function renderAlarm() {
-  const el = $('#alarm');
-  const al = app.state && app.state.alarm;
-  const s = $('#alarm-status');
-  if (s && al) s.innerHTML = al.on ? `<span class="bad blink">● Сбор объявлен${al.msg ? ': ' + esc(al.msg) : ''}</span>` : '<span class="muted">Сбора нет</span>';
-  const show = app.started && !isAdmin() && al && al.on && store.get('alarmSeen', 0) !== al.id;
-  if (!show) {
-    if (!el.hidden) { el.hidden = true; el.innerHTML = ''; }
-    sound.stopSiren();
-    return;
-  }
-  if (el.hidden || el.dataset.id !== String(al.id)) {
-    el.dataset.id = al.id;
-    el.innerHTML = `<div class="alarm-word">СБОР</div>${al.msg ? `<div class="alarm-msg">${esc(al.msg)}</div>` : ''}
-      <button class="btn big alarm-ok" data-act="alarmSeen">Иду! 🏃</button>`;
-    el.hidden = false;
-    sound.startSiren();
-    if (navigator.vibrate) navigator.vibrate([500, 200, 500, 200, 500]);
-  }
-}
-
 // ===================== Кнопка «Кто первый» =====================
 
 const secFmt = ms => (ms / 1000).toFixed(2).replace('.', ',') + ' с';
@@ -1078,7 +1047,7 @@ function renderBuzzer() {
     el.innerHTML = `<div class="buzz-title">${bz.winner ? (won ? 'ВЫ ПЕРВЫЕ! 🎉' : esc(bz.winner) + ' — первые!') : 'Никто не успел'}</div>
       ${bz.winner && bz.points ? `<div class="buzz-sub">+${bz.points} в «${esc(bz.discipline)}»</div>` : ''}
       <ol class="buzz-list">${list.map((t, i) => `<li class="${t === team ? 'mine' : ''}">${MEDALS[i] || i + 1} ${esc(t)} <span>${secFmt(bz.presses[t])}</span></li>`).join('')}</ol>
-      <button class="btn big alarm-ok" data-act="buzzSeen">OK</button>`;
+      <button class="btn big buzz-ok" data-act="buzzSeen">OK</button>`;
   }
   const btn = $('#buzz-btn');
   if (btn) btn.addEventListener('pointerdown', buzzPress, { once: true });
@@ -1147,7 +1116,6 @@ const ACTIONS = {
     if (!isAdmin() && !confirm('Сменить устройство? (Команда / экран / пульт)')) return;
     logout();
   },
-  alarmSeen() { store.set('alarmSeen', app.state.alarm.id); renderAlarm(); },
   buzzSeen() { store.set('buzzSeen', app.state.buzzer.id); renderBuzzer(); },
   buzzerStart() { act('buzzerStart', { discipline: $('#bz-disc').value, points: Number($('#bz-pts').value) || 0 }); },
   buzzerFinalize() { act('buzzerFinalize'); },
@@ -1191,8 +1159,6 @@ const ACTIONS = {
 
 
   // --- пульт ---
-  alarmOn() { act('alarm', { on: true, msg: ($('#alarm-msg') || {}).value || '' }); },
-  alarmOff() { act('alarm', { on: false }); },
   setScreen(el) { act('setScreen', { screen: el.dataset.screen, results: el.dataset.results }); },
   planCurrent(el) { act('planCurrent', { i: Number(el.dataset.i) }); },
   refresh() { act('refresh').then(() => toast('Данные перечитаны', 'ok')); },
